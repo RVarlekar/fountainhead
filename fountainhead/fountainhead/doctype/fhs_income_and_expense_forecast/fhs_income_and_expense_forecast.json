@@ -1,0 +1,76 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:FHS-IE-{fiscal_year}",
+ "creation": "2025-10-01 13:21:51.364555",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "column_break_wvea",
+  "fiscal_year",
+  "section_break_mimu",
+  "fetch_accounts",
+  "accounts_details"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "column_break_wvea",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Link",
+   "label": "Fiscal Year",
+   "options": "Fiscal Year"
+  },
+  {
+   "fieldname": "section_break_mimu",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "accounts_details",
+   "fieldtype": "Table",
+   "label": "Accounts Details",
+   "options": "FHS Income Expense Forecast Details"
+  },
+  {
+   "fieldname": "fetch_accounts",
+   "fieldtype": "Button",
+   "label": "Fetch Accounts"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-10-01 15:36:25.349366",
+ "modified_by": "Administrator",
+ "module": "Fountainhead",
+ "name": "FHS Income And Expense Forecast",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

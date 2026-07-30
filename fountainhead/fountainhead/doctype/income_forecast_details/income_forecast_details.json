@@ -1,0 +1,83 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-04-23 15:45:44.389034",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "grade",
+  "noof_students",
+  "fees_per_year_per_student",
+  "annual_fees",
+  "column_break_fenz",
+  "no_of_discounted_students",
+  "total_grade_discount",
+  "fees_amount_after_discount"
+ ],
+ "fields": [
+  {
+   "fieldname": "grade",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Grade",
+   "options": "FHS Grade"
+  },
+  {
+   "fieldname": "noof_students",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "No.of Students"
+  },
+  {
+   "fieldname": "fees_per_year_per_student",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Fees Per Year Per Student"
+  },
+  {
+   "fieldname": "annual_fees",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Annual Fees"
+  },
+  {
+   "fieldname": "column_break_fenz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "no_of_discounted_students",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "No of Discounted Students"
+  },
+  {
+   "fieldname": "total_grade_discount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Total Grade Discount"
+  },
+  {
+   "description": "Total Amount After Discount = Annual Fess - Total Grade Discount",
+   "fieldname": "fees_amount_after_discount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Fees Amount After Discount",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-10-01 12:51:55.721432",
+ "modified_by": "Administrator",
+ "module": "Fountainhead",
+ "name": "Income Forecast Details",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

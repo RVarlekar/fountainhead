@@ -1,0 +1,29 @@
+{
+ "add_total_row": 0,
+ "add_translate_data": 0,
+ "columns": [],
+ "creation": "2025-10-01 15:50:51.263098",
+ "disabled": 0,
+ "docstatus": 0,
+ "doctype": "Report",
+ "filters": [],
+ "idx": 0,
+ "is_standard": "Yes",
+ "letter_head": "Fountainhead",
+ "letterhead": null,
+ "modified": "2025-10-01 15:50:51.263098",
+ "modified_by": "Administrator",
+ "module": "Fountainhead",
+ "name": "Income & Expense Budget Vs Actual",
+ "owner": "Administrator",
+ "prepared_report": 0,
+ "ref_doctype": "FHS Income And Expense Forecast",
+ "report_name": "Income & Expense Budget Vs Actual",
+ "report_type": "Script Report",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "timeout": 0
+}
