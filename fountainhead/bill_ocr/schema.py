@@ -12,7 +12,11 @@ so the total reconciles. Fountainhead simply cannot claim the input credit.
 INVOICE_LINE = {
 	"type": "object",
 	"properties": {
-		"description": {"type": "string"},
+		"description": {"type": "string", "description": "Exactly as printed, original script"},
+		"descriptionEn": {
+			"type": "string",
+			"description": "The same line in plain English — translate the meaning, not the sounds",
+		},
 		"hsnSac": {"type": "string"},
 		"quantity": {"type": "number"},
 		"unit": {"type": "string"},
@@ -36,6 +40,10 @@ INVOICE_SCHEMA = {
 	"properties": {
 		# Vendor (the seller)
 		"vendorName": {"type": "string", "description": "Seller / supplier name as printed"},
+		"vendorNameEn": {
+			"type": "string",
+			"description": "Seller name in English/Latin script (same as vendorName if already English)",
+		},
 		"vendorGstin": {"type": "string"},
 		"vendorPan": {"type": "string"},
 		"vendorState": {"type": "string"},
