@@ -124,7 +124,14 @@ def _one(path):
 	)
 
 	# --- master data resolution -------------------------------------------
-	sup = match.match_supplier(clean.get("vendorName"), clean.get("vendorGstin"))
+	# Match on the English rendering first, exactly as api.py does. Measuring a
+	# different code path than the one that ships produces numbers that are worse
+	# than useless — the first re-run reported two suppliers "regressing" purely
+	# because this line was left behind when api.py moved to vendorNameEn.
+	rec["vendor_en"] = clean.get("vendorNameEn")
+	sup = match.match_supplier(
+		clean.get("vendorNameEn") or clean.get("vendorName"), clean.get("vendorGstin")
+	)
 	rec["supplier"] = sup["supplier"]
 	rec["supplier_method"] = sup["method"]
 	rec["supplier_confidence"] = sup["confidence"]

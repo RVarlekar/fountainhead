@@ -188,7 +188,38 @@ def reconcile(data):
 LINE_TOLERANCE = 1.0
 
 
-def reconcile_lines(lines):
+def lines_are_tax_inclusive(data):
+	"""Do the printed line amounts already include GST?
+
+	Some bills print an "Amount" column per line that is tax-inclusive. ANJALI
+	ENTERPRISE is the case that exposed this: taxable 25,000 + CGST 2,250 +
+	SGST 2,250 = 29,500, and the line's Amount column reads 29,500 while its
+	Price/Unit reads 25,000.
+
+	That matters because reconcile_lines trusts the printed amount and corrects
+	the rate from it. On a tax-inclusive bill that "correction" turns a correct
+	rate of 25,000 into 29,500 — silently inflating the line by the tax. So this
+	has to be detected first, and rate correction switched off when it is true.
+
+	Test: the line amounts reconcile to the GRAND TOTAL rather than to the
+	taxable value.
+	"""
+	lines = data.get("lines") or []
+	amounts = [l.get("lineAmount") for l in lines if l.get("lineAmount") is not None]
+	taxable = data.get("taxableValue")
+	total = data.get("totalInvoiceValue")
+	if not amounts or taxable is None or total is None:
+		return False
+	if abs(round2(total - taxable)) <= LINE_TOLERANCE:
+		return False  # no tax on this bill; the question doesn't arise
+	summed = round2(sum(amounts))
+	return (
+		abs(summed - total) <= LINE_TOLERANCE
+		and abs(summed - taxable) > LINE_TOLERANCE
+	)
+
+
+def reconcile_lines(lines, tax_inclusive=False):
 	"""Make each line's quantity, rate and amount agree with each other.
 
 	The printed **line amount** is authoritative: it is what sums to the taxable
@@ -229,6 +260,17 @@ def reconcile_lines(lines):
 
 		expected = round2(qty * rate)
 		if abs(expected - amount) <= LINE_TOLERANCE:
+			continue
+
+		if tax_inclusive:
+			# The printed amount includes GST but the rate does not, so they are
+			# SUPPOSED to differ. Correcting here would inflate the rate by the tax.
+			# Say so and leave the numbers alone.
+			notes.append(
+				f"Line {i}: the bill prints {amount:,.2f} for this line including GST, "
+				f"while {qty:g} x {rate:,.2f} is the pre-tax {expected:,.2f}. Left as "
+				"printed — ERPNext adds tax separately."
+			)
 			continue
 
 		corrected = round2(amount / qty)
@@ -294,6 +336,10 @@ def check_line_total(data):
 	taxable = data.get("taxableValue")
 	if not amounts or taxable is None:
 		return []
+	# On a tax-inclusive bill the lines are MEANT to exceed the taxable value by
+	# exactly the tax — already explained per line, so don't warn twice.
+	if data.get("linesTaxInclusive"):
+		return []
 	total = round2(sum(amounts))
 	if abs(total - taxable) <= LINE_TOLERANCE:
 		return []
@@ -352,7 +398,9 @@ def normalize(raw):
 			"lineAmount": parse_number(line.get("lineAmount")),
 		})
 	data["lines"] = lines
-	notes.extend(reconcile_lines(lines))
+	inclusive = lines_are_tax_inclusive(data)
+	data["linesTaxInclusive"] = inclusive
+	notes.extend(reconcile_lines(lines, tax_inclusive=inclusive))
 
 	notes.extend(reconcile(data))
 	notes.extend(drop_annotation_lines(data))
