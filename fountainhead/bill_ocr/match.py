@@ -282,7 +282,7 @@ def token_score(line_tokens, item_tokens):
 ITEM_SUGGEST = 30.0
 
 
-def match_items(lines, supplier=None):
+def match_items(lines, supplier=None, item_group_hint=None):
 	"""Match each bill line to an Item.
 
 	Two-pass, mirroring what made the item-group suggestion work: look at what
@@ -306,21 +306,30 @@ def match_items(lines, supplier=None):
 	if not lines:
 		return []
 
-	prior = set()
+	# What this supplier has actually been billed for, and how often.
+	# The counts matter, not just the set: many suppliers sell one thing over and
+	# over — VINODBHAI MANJIBHAI RATHOD has 4 distinct items ever and 11 of those
+	# receipts were "Fabrication Work FS". For a supplier like that, history beats
+	# text similarity outright, and the usual item must be offered even when the
+	# wording on this particular bill happens not to match it.
+	prior_counts = {}
 	if supplier:
-		prior = {
-			r.item_code
-			for r in frappe.db.sql(
-				"""
-				SELECT DISTINCT pri.item_code
-				FROM `tabPurchase Receipt Item` pri
-				JOIN `tabPurchase Receipt` pr ON pr.name = pri.parent
-				WHERE pr.supplier = %s AND pri.item_code IS NOT NULL
-				""",
-				supplier,
-				as_dict=True,
-			)
-		}
+		for r in frappe.db.sql(
+			"""
+			SELECT pri.item_code AS code, COUNT(*) AS n
+			FROM `tabPurchase Receipt Item` pri
+			JOIN `tabPurchase Receipt` pr ON pr.name = pri.parent
+			WHERE pr.supplier = %s AND pri.item_code IS NOT NULL AND pri.item_code != ''
+			GROUP BY pri.item_code ORDER BY n DESC
+			""",
+			supplier,
+			as_dict=True,
+		):
+			prior_counts[r["code"]] = int(r["n"])
+	prior = set(prior_counts)
+	prior_total = sum(prior_counts.values()) or 1
+	# The supplier's most-used items, ready to offer as "their usual".
+	usual = sorted(prior_counts.items(), key=lambda kv: -kv[1])[:3]
 
 	items = frappe.get_all(
 		"Item",
@@ -332,10 +341,21 @@ def match_items(lines, supplier=None):
 
 	out = []
 	for line in lines:
-		line_tokens = tokens(line.get("description"))
+		# Score against BOTH readings and keep the better one.
+		#   - the English rendering is the only hope for a Gujarati line, since the
+		#     item master is entirely English;
+		#   - but a translation is often wordier than the original ("MLC-PAREN
+		#     UNDERTAKING-PARENT COPY" becomes a full sentence), and extra words
+		#     depress the score, so the original must stay in the running too.
+		# Using only the translation lost matches that previously worked.
+		tokens_en = tokens(line.get("descriptionEn"))
+		tokens_raw = tokens(line.get("description"))
 		scored = []
 		for item_tokens, item in index:
-			score = token_score(line_tokens, item_tokens)
+			score = max(
+				token_score(tokens_en, item_tokens),
+				token_score(tokens_raw, item_tokens),
+			)
 			if score <= 0:
 				continue
 			# Prefer what this supplier has actually billed before.
@@ -352,13 +372,42 @@ def match_items(lines, supplier=None):
 				"stock_uom": i.stock_uom,
 				"score": round(s, 1),
 				"seen_before": i.name in prior,
+				"times_used": prior_counts.get(i.name, 0),
+				"basis": "match",
 			}
 			for s, i in scored[:4]
 			if s >= ITEM_SUGGEST
 		]
 
+		# Always offer this supplier's usual items, even when nothing matched by text.
+		# Translations vary run to run — the same Gujarati line came back as "related
+		# fabrication work" once and "cutting and fitting work" the next time, and only
+		# the first wording happened to match their usual item. History does not wobble
+		# like that, so it goes in regardless of wording.
+		have = {c["item_code"] for c in candidates}
+		for code, times in usual:
+			if code in have:
+				continue
+			row = frappe.db.get_value(
+				"Item", code, ["name", "item_name", "item_group", "stock_uom"], as_dict=True
+			)
+			if not row:
+				continue
+			candidates.append({
+				"item_code": row.name,
+				"item_name": row.item_name or row.name,
+				"item_group": row.item_group,
+				"stock_uom": row.stock_uom,
+				"score": round(100.0 * times / prior_total, 1),
+				"seen_before": True,
+				"times_used": times,
+				"basis": "usual",
+			})
+
 		out.append({
 			"description": line.get("description"),
+			"description_en": line.get("descriptionEn"),
+			"is_translated": line.get("isTranslated", False),
 			"quantity": line.get("quantity"),
 			"rate": line.get("rate"),
 			"amount": line.get("lineAmount"),
@@ -366,5 +415,141 @@ def match_items(lines, supplier=None):
 			# Always None — see the docstring. The user chooses from `candidates`.
 			"item_code": None,
 			"candidates": candidates,
+			# Everything the "create this item" form needs, pre-filled.
+			"create_defaults": creation_defaults(line, item_group_hint),
 		})
 	return out
+
+
+def find_similar_items(name, limit=5):
+	"""Existing items that resemble a proposed new name — the "did you mean?" list.
+
+	A wider net than match_items uses: this is a last check before a NEW item is
+	added to an already-duplicated master, so it should surface anything close.
+	"""
+	target = tokens(name)
+	if not target:
+		return []
+	scored = []
+	for i in frappe.get_all("Item", fields=["name", "item_name", "item_group", "stock_uom"],
+	                        filters={"disabled": 0}, limit_page_length=0):
+		label = i.item_name or i.name
+		score = max(
+			token_score(target, tokens(label)),
+			similarity(normalize_name(name), normalize_name(label)),
+		)
+		if score >= 55:
+			scored.append((score, i, label))
+	scored.sort(key=lambda t: -t[0])
+	return [
+		{"item_code": i.name, "item_name": label, "item_group": i.item_group,
+		 "stock_uom": i.stock_uom, "score": round(s, 1)}
+		for s, i, label in scored[:limit]
+	]
+
+
+# --- creating an item from a bill line ------------------------------------
+
+# Bill units are written a dozen ways for the same thing. The master holds
+# Number (2,843 uses) and Pieces (2,831) as near-equals plus Nos and Quantity —
+# four names for one unit. New items standardise on Number.
+UOM_ALIASES = {
+	"no": "Number", "nos": "Number", "ng": "Number", "number": "Number", "numbers": "Number",
+	"pc": "Number", "pcs": "Number", "piece": "Number", "pieces": "Number",
+	"qty": "Number", "quantity": "Number", "unit": "Number", "units": "Number", "each": "Number",
+	"kg": "Kilogram", "kgs": "Kilogram", "kilo": "Kilogram", "kilogram": "Kilogram",
+	"gm": "Gram", "gms": "Gram", "gram": "Gram",
+	"l": "Litre", "ltr": "Litre", "ltrs": "Litre", "litre": "Litre", "liter": "Litre",
+	"m": "Meter", "mtr": "Meter", "mtrs": "Meter", "meter": "Meter", "metre": "Meter",
+	"ft": "Foot", "feet": "Foot", "foot": "Foot",
+	"box": "Box", "boxes": "Box", "bx": "Box",
+	"pkt": "Packet", "pkts": "Packet", "packet": "Packet", "pack": "Packet",
+	"pair": "Pair", "prs": "Pair", "doz": "Dozen", "dozen": "Dozen",
+	"set": "Set", "sets": "Set", "roll": "Roll", "rolls": "Roll",
+	"sqft": "Square Foot", "sq ft": "Square Foot", "sqmt": "Square Meter",
+}
+DEFAULT_UOM = "Number"
+
+# Below this, the group's own history is too mixed to decide stock-vs-service for
+# the user — the form asks instead of guessing.
+STOCK_CONFIDENCE = 75.0
+
+
+def normalise_uom(raw):
+	"""Bill unit -> a UOM that actually exists in this system."""
+	if raw:
+		key = re.sub(r"[^\w\s]", "", str(raw)).strip().lower()
+		mapped = UOM_ALIASES.get(key)
+		if mapped and frappe.db.exists("UOM", mapped):
+			return mapped
+		# The bill's own wording may already be a valid UOM (e.g. "Kilogram").
+		exact = frappe.db.get_value("UOM", {"uom_name": str(raw).strip()}, "name")
+		if exact:
+			return exact
+	return DEFAULT_UOM if frappe.db.exists("UOM", DEFAULT_UOM) else None
+
+
+def stock_default_for_group(item_group):
+	"""Is a new item in this group normally a stock item, or a service?
+
+	Answered from the group's own history rather than a hardcoded rule, because
+	the real split is not obvious — 'Asset' is 100% service, 'Educational' 99%
+	stock, and 'Safety Equipment' only 56% either way. Where the group is that
+	mixed we say so and let the user choose.
+	"""
+	if not item_group:
+		return {"is_stock_item": 1, "confidence": 0.0, "basis": "no item group given"}
+
+	row = frappe.db.sql(
+		"""
+		SELECT SUM(is_stock_item = 1) AS stock, SUM(is_stock_item = 0) AS svc, COUNT(*) AS total
+		FROM tabItem WHERE item_group = %s
+		""",
+		item_group,
+		as_dict=True,
+	)
+	r = row[0] if row else None
+	total = int(r["total"] or 0) if r else 0
+	if not total:
+		return {"is_stock_item": 1, "confidence": 0.0,
+		        "basis": f"no existing items in {item_group}"}
+
+	stock, svc = int(r["stock"] or 0), int(r["svc"] or 0)
+	is_stock = 1 if stock >= svc else 0
+	confidence = round(100.0 * max(stock, svc) / total, 0)
+	return {
+		"is_stock_item": is_stock,
+		"confidence": confidence,
+		"certain": confidence >= STOCK_CONFIDENCE,
+		"basis": f"{max(stock, svc)} of {total} items in {item_group} are "
+		         f"{'stock' if is_stock else 'service'}",
+	}
+
+
+def clean_item_name(text):
+	"""Turn a bill line into a usable item name.
+
+	Bill lines carry order noise — "QTY.12(8.5x12-40PAGES)", trailing voucher
+	refs like "[PS] PR-3661". Strip that, keep what the thing actually is, and
+	respect ERPNext's 140-character limit.
+	"""
+	if not text:
+		return ""
+	s = str(text).strip()
+	s = re.sub(r"\[?\b(PS|PR|FS)\b[\s/-]*\d+\]?", " ", s, flags=re.I)  # voucher refs
+	s = re.sub(r"\bqty\.?\s*[:\-]?\s*\d+(\.\d+)?\b", " ", s, flags=re.I)  # "QTY.12"
+	s = re.sub(r"\s+", " ", s).strip(" -,;:/")
+	return s[:140]
+
+
+def creation_defaults(line, item_group_hint=None):
+	"""Everything the create-item form should open with, pre-filled from the bill."""
+	name = clean_item_name(line.get("descriptionEn") or line.get("description"))
+	return {
+		"item_name": name,
+		"original_text": line.get("description"),
+		"item_group": item_group_hint,
+		"stock_uom": normalise_uom(line.get("unit")),
+		"uom_on_bill": line.get("unit"),
+		"stock": stock_default_for_group(item_group_hint),
+	}

@@ -19,6 +19,14 @@ Rules:
 - Copy every printed value EXACTLY as shown. Do NOT recompute or round any total, tax, or amount — copy the printed CGST/SGST/IGST/cess/round-off/total verbatim.
 - totalInvoiceValue is the FINAL AMOUNT PAYABLE — the printed grand total that matches the amount-in-words (e.g. "Total Rs." / "Grand Total" / "Invoice Amt" at the bottom). When a bill prints BOTH a pre-round line-items total AND a rounded payable (e.g. lines sum to 45,089.38 but "Total Rs." is 45,089.00), take the ROUNDED PAYABLE — never add up the lines yourself. The difference is the round-off; leave it to be derived if no explicit round-off row is shown.
 - Transcribe EVERY row of the line-items table into lines[] (description, hsnSac, quantity, unit, rate, lineAmount as printed). Do not leave lines empty when the bill has an items table.
+- LANGUAGE. Many bills are written in Gujarati or Hindi. For every such value give BOTH forms:
+  * `description` = exactly what is printed, in the original script, character for character.
+  * `descriptionEn` = the same thing in plain English, describing WHAT THE GOODS OR WORK ARE.
+    Translate the meaning, do not merely transliterate the sounds. For example
+    "હેય માટે જૂની સેમિંગ કટીંગ ફિટીંગ કરવાનો" is about cutting and fitting work, so write
+    something like "Cutting and fitting work on existing frame" — not "Hey mate juni seming".
+    Where the text is already English, repeat it in `descriptionEn` unchanged.
+  * Do the same for the seller: `vendorName` as printed, `vendorNameEn` in English/Latin script.
 - Decide whether any freight / packing / handling charge is INSIDE the taxed value (set ancillaryCharges = "taxed_inclusive") or added OUTSIDE it and untaxed (set ancillaryCharges = "untaxed_separate" AND list it in otherCharges). If you are unsure, populate otherCharges conservatively and set your best guess in ancillaryCharges.
 - expenseCategory is the NATURE of the expense (e.g. "ceiling fans", "office rent"), NOT the vendor name or a SKU string.
 - The VENDOR is the SELLER/supplier (issuer, usually the letterhead at the top). The BUYER is the "Bill to" / "Receiver" / "Billed to" party. Put the BUYER's name in targetCompany. Do NOT swap them: vendorGstin is the seller's, companyGstin is the buyer's.

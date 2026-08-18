@@ -337,8 +337,14 @@ def normalize(raw):
 	for line in data.get("lines") or []:
 		if not isinstance(line, dict):
 			continue
+		original = str(line.get("description") or "").strip()
+		english = str(line.get("descriptionEn") or "").strip()
 		lines.append({
-			"description": str(line.get("description") or "").strip(),
+			"description": original,
+			# The English rendering, used for item matching and for naming a new item.
+			# Falls back to the original when the bill was already in English.
+			"descriptionEn": english or original,
+			"isTranslated": bool(english and english.casefold() != original.casefold()),
 			"hsnSac": str(line.get("hsnSac") or "").strip() or None,
 			"quantity": parse_number(line.get("quantity")),
 			"unit": str(line.get("unit") or "").strip() or None,

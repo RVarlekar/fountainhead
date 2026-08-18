@@ -42,6 +42,11 @@ app_license = "mit"
 # include js in page
 # page_js = {"page" : "public/js/file.js"}
 
+# Bill OCR ships its own Custom Fields (the item-review tracking flags) so that
+# deploying the app is enough — no manual clicking on each site, and staging cannot
+# drift from production.
+after_migrate = "fountainhead.bill_ocr.install.after_migrate"
+
 # include js in doctype views
 doctype_js = {
 	"Project": "public/js/project.js",

@@ -123,6 +123,153 @@ fountainhead.bill_ocr = {
 			});
 	},
 
+	// Deliberate mini-form for adding an item that doesn't exist yet.
+	// Not a one-click button, on purpose: 2,291 of the 6,141 items in this system
+	// were created in the last year and it already contains typo-duplicates like
+	// "Foam Roller 6" / "Fuam Roller 6". Every new item must be a decision.
+	create_item(frm, line, result) {
+		const d = line.create_defaults || {};
+		const stock = d.stock || {};
+
+		const dlg = new frappe.ui.Dialog({
+			title: __("Create a new item"),
+			size: "large",
+			fields: [
+				{
+					fieldtype: "HTML",
+					fieldname: "src",
+					options: `<div class="alert alert-warning" style="margin-bottom:12px">
+						<b>${__("On the bill")}:</b> ${frappe.utils.escape_html(line.description || "")}
+						${
+							line.is_translated
+								? `<div class="small" style="margin-top:4px">${__("English")}:
+									<b>${frappe.utils.escape_html(line.description_en || "")}</b></div>`
+								: ""
+						}
+					</div>`,
+				},
+				{
+					fieldtype: "Data",
+					fieldname: "item_name",
+					label: __("Item name"),
+					reqd: 1,
+					default: d.item_name || line.description_en || line.description,
+					description: __("Taken from the bill. Edit it to match how your master names things."),
+				},
+				{
+					fieldtype: "Link",
+					fieldname: "item_group",
+					label: __("Item Group"),
+					options: "Item Group",
+					reqd: 1,
+					default: d.item_group || frm.doc.custom_item_group,
+					onchange() {
+						const g = this.get_value();
+						if (!g) return;
+						frappe.call({
+							method: "fountainhead.bill_ocr.api.get_creation_defaults",
+							args: { item_group: g, unit: d.uom_on_bill },
+							callback: (r) => {
+								if (!r.message) return;
+								const s = r.message.stock || {};
+								dlg.set_value("is_stock_item", s.is_stock_item ? 1 : 0);
+								dlg.get_field("is_stock_item").set_description(
+									s.basis ? __("Based on history: {0}", [s.basis]) : ""
+								);
+							},
+						});
+					},
+				},
+				{
+					fieldtype: "Link",
+					fieldname: "stock_uom",
+					label: __("Unit of Measure"),
+					options: "UOM",
+					reqd: 1,
+					default: d.stock_uom || "Number",
+					description: d.uom_on_bill
+						? __("Bill says “{0}”.", [d.uom_on_bill])
+						: __("The bill did not state a unit."),
+				},
+				{
+					fieldtype: "Check",
+					fieldname: "is_stock_item",
+					label: __("This is a stock item (it goes into inventory)"),
+					default: stock.is_stock_item ? 1 : 0,
+					description: stock.basis
+						? __("Based on history: {0}", [stock.basis]) +
+						  (stock.certain ? "" : "  ⚠ " + __("this group is mixed — please check"))
+						: "",
+				},
+				{ fieldtype: "HTML", fieldname: "similar" },
+			],
+			primary_action_label: __("Create item"),
+			primary_action: (v) => fountainhead.bill_ocr._do_create(frm, line, result, dlg, v, 0),
+		});
+		dlg.show();
+	},
+
+	_do_create(frm, line, result, dlg, values, acknowledged) {
+		frappe.call({
+			method: "fountainhead.bill_ocr.api.create_item_from_bill",
+			args: {
+				item_name: values.item_name,
+				item_group: values.item_group,
+				stock_uom: values.stock_uom,
+				is_stock_item: values.is_stock_item ? 1 : 0,
+				description: line.description,
+				source_note: `${result.supplier?.supplier || result.vendor_name_on_bill || ""} — ${
+					result.fields?.bill_no || ""
+				}`,
+				acknowledged_similar: acknowledged,
+			},
+			freeze: true,
+			freeze_message: __("Creating item…"),
+			callback: (r) => {
+				const m = r.message || {};
+				if (m.needs_confirmation) {
+					// Show what already exists BEFORE allowing a duplicate.
+					const rows = (m.similar || [])
+						.map(
+							(s) => `<li style="margin:4px 0">
+								<button class="btn btn-xs btn-default bill-ocr-useexisting"
+									data-code="${frappe.utils.escape_html(s.item_code)}">
+									${__("Use this")}
+								</button>
+								<b>${frappe.utils.escape_html(s.item_name)}</b>
+								<span class="text-muted">${s.score}% · ${frappe.utils.escape_html(s.item_group || "")}</span>
+							</li>`
+						)
+						.join("");
+					dlg.get_field("similar").$wrapper.html(
+						`<div class="alert alert-danger" style="margin-top:10px">
+							<b>${__("Did you mean one of these?")}</b>
+							<div class="small">${__(
+								"These already exist. Creating a near-duplicate makes the item master harder to use for everyone."
+							)}</div>
+							<ul style="margin:8px 0 0 0;padding-left:18px">${rows}</ul>
+							<button class="btn btn-xs btn-danger bill-ocr-forcecreate" style="margin-top:6px">
+								${__("None of these — create it anyway")}
+							</button>
+						</div>`
+					);
+					dlg.get_field("similar").$wrapper.find(".bill-ocr-useexisting").on("click", function () {
+						fountainhead.bill_ocr.assign_item(frm, line, $(this).data("code"));
+						dlg.hide();
+					});
+					dlg.get_field("similar").$wrapper.find(".bill-ocr-forcecreate").on("click", () =>
+						fountainhead.bill_ocr._do_create(frm, line, result, dlg, values, 1)
+					);
+					return;
+				}
+				if (m.created) {
+					fountainhead.bill_ocr.assign_item(frm, line, m.item_code);
+					dlg.hide();
+				}
+			},
+		});
+	},
+
 	show_summary(frm, result) {
 		const money = (v) =>
 			v === null || v === undefined
@@ -184,26 +331,58 @@ fountainhead.bill_ocr = {
 		const lines_html = (result.items || [])
 			.map((line, i) => {
 				const cands = line.candidates || [];
+				// Two kinds of suggestion, labelled differently because they mean
+				// different things: a text match is "this reads like that item",
+				// whereas "their usual" is "this supplier is nearly always billed
+				// for that". A raw percentage would make them look comparable.
 				const buttons = cands.length
 					? cands
-							.map(
-								(c) =>
-									`<button class="btn btn-xs btn-default bill-ocr-pick"
+							.map((c) => {
+								const tag =
+									c.basis === "usual"
+										? `<span class="text-muted">· ${__("their usual, {0}×", [
+												c.times_used,
+										  ])}</span>`
+										: `<span class="text-muted">${c.score}%${
+												c.times_used
+													? " ·&nbsp;" + __("used {0}×", [c.times_used])
+													: ""
+										  }</span>`;
+								return `<button class="btn btn-xs btn-default bill-ocr-pick"
 										style="margin:2px 4px 2px 0"
 										data-line="${i}" data-code="${frappe.utils.escape_html(c.item_code)}">
-										${frappe.utils.escape_html(c.item_name || c.item_code)}
-										<span class="text-muted">${c.score}%${c.seen_before ? " ·&nbsp;used&nbsp;before" : ""}</span>
-									</button>`
-							)
+										${frappe.utils.escape_html(c.item_name || c.item_code)} ${tag}
+									</button>`;
+							})
 							.join("")
-					: `<span class="text-muted small">${__("No similar item found — pick one in the Items table.")}</span>`;
+					: `<span class="text-muted small">${__("Nothing similar in the item master.")}</span>`;
+
+				// Always offer creation — it is the only way out for a line like Row 6
+				// where the item genuinely does not exist yet.
+				const create_btn = result.can_create_item
+					? `<button class="btn btn-xs btn-primary bill-ocr-create"
+							style="margin:2px 4px 2px 0" data-line="${i}">
+							+ ${__("Create this item")}
+						</button>`
+					: `<span class="text-muted small">${__(
+							"(you do not have permission to create items)"
+					  )}</span>`;
+
+				// Gujarati/Hindi lines show the original AND the English reading.
+				const translated = line.is_translated
+					? `<div class="small" style="margin-top:2px">
+							<span class="text-muted">${__("English")}:</span>
+							<b>${frappe.utils.escape_html(line.description_en || "")}</b>
+						</div>`
+					: "";
 
 				return `<div style="padding:8px 0;border-bottom:1px solid var(--border-color)">
 					<div><b>${__("Row")} ${i + 1}.</b> ${frappe.utils.escape_html(line.description || "")}</div>
+					${translated}
 					<div class="small text-muted" style="margin:2px 0 6px">
 						${__("Qty")} ${line.quantity ?? "—"} × ${money(line.rate)} = ${money(line.amount)}
 					</div>
-					<div>${buttons}</div>
+					<div>${buttons} ${create_btn}</div>
 				</div>`;
 			})
 			.join("");
@@ -217,7 +396,15 @@ fountainhead.bill_ocr = {
 
 		d.$body.html(`
 			<p class="text-muted">${__("Read off the bill for")}
-				<b>${frappe.utils.escape_html(result.vendor_name_on_bill || "—")}</b></p>
+				<b>${frappe.utils.escape_html(result.vendor_name_on_bill || "—")}</b>
+				${
+					// Show the English reading beside a non-Latin name — it is what the
+					// supplier match actually ran against, so it must be checkable.
+					result.vendor_name_english &&
+					result.vendor_name_english !== result.vendor_name_on_bill
+						? `<span>(${frappe.utils.escape_html(result.vendor_name_english)})</span>`
+						: ""
+				}</p>
 			<table class="table table-bordered table-condensed">${totals_rows}</table>
 			${suggestion_html}
 			${reason_html}
@@ -240,6 +427,11 @@ fountainhead.bill_ocr = {
 				message: __("Reason inserted — refine it into the actual purpose."),
 				indicator: "blue",
 			});
+		});
+
+		d.$body.on("click", ".bill-ocr-create", function () {
+			const line = result.items[parseInt($(this).data("line"), 10)];
+			if (line) fountainhead.bill_ocr.create_item(frm, line, result);
 		});
 
 		d.$body.on("click", ".bill-ocr-pick", function () {
@@ -271,14 +463,23 @@ fountainhead.bill_ocr = {
 	},
 };
 
+// onload_post_render covers forms that ARRIVE with an attachment already set —
+// the batch queue's "Create Purchase Receipt" button routes here with the file
+// in route_options, which does not fire the field-change trigger.
 frappe.ui.form.on("Purchase Receipt", {
 	custom_attachment(frm) {
 		fountainhead.bill_ocr.run(frm);
+	},
+	onload_post_render(frm) {
+		if (frm.is_new() && frm.doc.custom_attachment) fountainhead.bill_ocr.run(frm);
 	},
 });
 
 frappe.ui.form.on("Purchase Invoice", {
 	custom_attachment(frm) {
 		fountainhead.bill_ocr.run(frm);
+	},
+	onload_post_render(frm) {
+		if (frm.is_new() && frm.doc.custom_attachment) fountainhead.bill_ocr.run(frm);
 	},
 });
