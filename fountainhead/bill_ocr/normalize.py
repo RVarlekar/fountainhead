@@ -254,6 +254,13 @@ def reconcile_lines(lines, tax_inclusive=False):
 		if qty is None and rate not in (None, 0) and amount is not None:
 			line["quantity"] = round2(amount / rate)
 			continue
+		# Lump-sum lines — handwritten labour/service bills often print only a
+		# total ("હરવાનો → 23000"). Without this, the row landed in ERPNext as
+		# qty 1 × rate 0 and contributed NOTHING to the document total.
+		if qty is None and rate is None and amount is not None:
+			line["quantity"] = 1.0
+			line["rate"] = round2(amount)
+			continue
 
 		if qty in (None, 0) or rate is None or amount is None:
 			continue

@@ -207,7 +207,7 @@ def suggest_item_group(supplier):
 		  AND custom_item_group IS NOT NULL AND custom_item_group != ''
 		GROUP BY custom_item_group
 		ORDER BY n DESC
-		LIMIT 2
+		LIMIT 3
 		""",
 		supplier,
 		as_dict=True,
@@ -223,6 +223,14 @@ def suggest_item_group(supplier):
 		# Share of this supplier's recent receipts using it — shown to the user so a
 		# supplier who genuinely varies doesn't get a confident-looking wrong answer.
 		"share": round(100.0 * best.n / total, 0) if total else 0,
+		# A supplier whose history spans groups gets EVERY meaningful group offered,
+		# because the header carries exactly one group and it picks the approver —
+		# for a mixed bill the user must choose which chain the document goes down.
+		"others": [
+			{"item_group": r.grp, "seen": r.n, "share": round(100.0 * r.n / total, 0)}
+			for r in rows[1:]
+			if r.n >= 2
+		],
 	}
 
 
@@ -339,6 +347,21 @@ def match_items(lines, supplier=None, item_group_hint=None):
 	)
 	index = [(tokens(i.item_name or i.name), i) for i in items]
 
+	def _learned_item(line):
+		"""Word-for-word memory: has a user already picked an item for exactly
+		this wording? Auto-applied — which is precisely why it is EXACT match
+		only; anything merely similar still goes through suggestions."""
+		if not frappe.db.exists("DocType", "Bill OCR Item Map"):
+			return None
+		for text in (line.get("description"), line.get("descriptionEn")):
+			key = " ".join(str(text or "").split()).casefold()[:500]
+			if len(key) < 4:
+				continue
+			code = frappe.db.get_value("Bill OCR Item Map", {"normalized_text": key}, "item_code")
+			if code and frappe.db.get_value("Item", code, "disabled") == 0:
+				return code
+		return None
+
 	out = []
 	for line in lines:
 		# Score against BOTH readings and keep the better one.
@@ -404,16 +427,35 @@ def match_items(lines, supplier=None, item_group_hint=None):
 				"basis": "usual",
 			})
 
+		# The one exception to "never auto-pick": an EXACT wording the user has
+		# already answered. Human decision replayed, not a guess.
+		learned = _learned_item(line)
+		if learned:
+			row = frappe.db.get_value(
+				"Item", learned, ["item_name", "item_group", "stock_uom"], as_dict=True
+			)
+			candidates.insert(0, {
+				"item_code": learned,
+				"item_name": (row and row.item_name) or learned,
+				"item_group": row and row.item_group,
+				"stock_uom": row and row.stock_uom,
+				"score": 100.0,
+				"seen_before": True,
+				"times_used": prior_counts.get(learned, 0),
+				"basis": "learned",
+			})
+
 		out.append({
 			"description": line.get("description"),
 			"description_en": line.get("descriptionEn"),
 			"is_translated": line.get("isTranslated", False),
+			"is_charge": line.get("isCharge", False),
 			"quantity": line.get("quantity"),
 			"rate": line.get("rate"),
 			"amount": line.get("lineAmount"),
 			"uom": line.get("unit"),
-			# Always None — see the docstring. The user chooses from `candidates`.
-			"item_code": None,
+			# None unless LEARNED — a wording this user base has answered before.
+			"item_code": learned,
 			"candidates": candidates,
 			# Everything the "create this item" form needs, pre-filled.
 			"create_defaults": creation_defaults(line, item_group_hint),

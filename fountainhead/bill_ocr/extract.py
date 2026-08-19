@@ -45,12 +45,32 @@ def _content_block(file_bytes, mime_type):
 	frappe.throw(f"Bill OCR cannot read files of type {mime_type}. Attach a PDF or an image.")
 
 
-def read_bill(file_bytes, mime_type):
+CAREFUL_SUFFIX = (
+	"\n\nIMPORTANT — a human reviewer looked at a previous reading of this bill and "
+	"flagged it as containing mistakes (misread amounts and/or misspelled names), "
+	"without saying which. Treat this pass as a re-audit, not a first read:\n"
+	"- re-verify EVERY digit of every quantity, rate, amount and total directly "
+	"against the image, one character at a time;\n"
+	"- re-verify the spelling of the vendor name and every line description "
+	"character by character;\n"
+	"- check your own arithmetic before emitting: line amounts must sum to the "
+	"taxable value, and taxable + taxes + round-off must equal the grand total;\n"
+	"- where the handwriting is genuinely ambiguous, prefer the reading that makes "
+	"the arithmetic work, and never invent values that are not on the page."
+)
+
+
+def read_bill(file_bytes, mime_type, feedback=None, careful=False):
 	"""Send the bill to Claude and return the raw extracted dict.
 
 	Forces the `emit_invoice` tool so the reply is structured JSON, never prose.
 	Thinking is disabled: this is transcription, and adaptive thinking spends
 	tokens against max_tokens without improving it.
+
+	`feedback` is a reviewer correction written by the user in plain language
+	("the 2,250 is a 20% supervision charge, not a work line"). It is appended
+	to the instructions so the re-read can fix exactly what the human said was
+	wrong.
 	"""
 	api_key = frappe.conf.get("anthropic_api_key")
 	if not api_key:
@@ -75,7 +95,23 @@ def read_bill(file_bytes, mime_type):
 		"messages": [
 			{
 				"role": "user",
-				"content": [_content_block(file_bytes, mime_type), {"type": "text", "text": USER_PROMPT}],
+				"content": [
+					_content_block(file_bytes, mime_type),
+					{
+						"type": "text",
+						"text": USER_PROMPT
+						+ (CAREFUL_SUFFIX if careful else "")
+						+ (
+							"\n\nIMPORTANT — a human reviewer looked at your previous reading of this "
+							"bill and says it was wrong. Their correction, in their own words:\n"
+							f"\"{feedback}\"\n"
+							"Re-read the bill taking this correction as authoritative about what the "
+							"bill means; still transcribe printed values exactly."
+							if feedback
+							else ""
+						),
+					},
+				],
 			}
 		],
 	}
