@@ -20,6 +20,7 @@
   "grand_total",
   "lines_count",
   "section_raw",
+  "content_hash",
   "extraction_json"
  ],
  "fields": [
@@ -114,6 +115,14 @@
    "fieldname": "section_raw",
    "fieldtype": "Section Break",
    "label": "Raw reading (for support)"
+  },
+  {
+   "description": "SHA of the file's content — lets a re-uploaded copy of the same photo reuse the stored reading instead of paying to read it again.",
+   "fieldname": "content_hash",
+   "fieldtype": "Data",
+   "label": "File content hash",
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "extraction_json",

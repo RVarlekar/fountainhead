@@ -24,45 +24,64 @@ frappe.listview_settings["Bill OCR Upload"] = {
 			});
 		});
 
-		listview.page.add_inner_button(__("Read all pending"), async () => {
-			const pending = await frappe.db.get_list("Bill OCR Upload", {
-				filters: { status: "Pending" },
-				fields: ["name"],
-				limit: 200,
-				order_by: "creation asc",
-			});
-			if (!pending.length) {
-				frappe.show_alert({ message: __("Nothing pending."), indicator: "blue" });
+		// NOTE: the handler must NOT return a promise — Frappe disables an inner
+		// button while a returned promise is pending, and it never re-enabled
+		// after the first batch. Fire-and-forget keeps the button always usable;
+		// the guard below stops two batches running at once.
+		let batch_running = false;
+		const read_all_pending = async () => {
+			if (batch_running) {
+				frappe.show_alert({ message: __("A batch is already running."), indicator: "orange" });
 				return;
 			}
-
+			batch_running = true;
 			let done = 0,
 				failed = 0;
-			for (const row of pending) {
-				frappe.show_progress(
-					__("Reading bills"),
-					done + failed,
-					pending.length,
-					__("{0} of {1} — each takes ~8 seconds", [done + failed + 1, pending.length])
-				);
-				try {
-					const r = await frappe.call({
-						method: "fountainhead.bill_ocr.api.read_upload",
-						args: { name: row.name },
-					});
-					(r.message || {}).status === "Error" ? failed++ : done++;
-				} catch (e) {
-					failed++;
+			try {
+				const pending = await frappe.db.get_list("Bill OCR Upload", {
+					filters: { status: "Pending" },
+					fields: ["name"],
+					limit: 200,
+					order_by: "creation asc",
+				});
+				if (!pending.length) {
+					frappe.show_alert({ message: __("Nothing pending."), indicator: "blue" });
+					return;
 				}
+				for (const row of pending) {
+					frappe.show_progress(
+						__("Reading bills"),
+						done + failed,
+						pending.length,
+						__("{0} of {1} — each takes ~8 seconds", [done + failed + 1, pending.length])
+					);
+					try {
+						const r = await frappe.call({
+							method: "fountainhead.bill_ocr.api.read_upload",
+							args: { name: row.name },
+						});
+						(r.message || {}).status === "Error" ? failed++ : done++;
+					} catch (e) {
+						failed++;
+					}
+				}
+				frappe.msgprint(
+					__("Batch finished: {0} read, {1} failed. Failed rows show their error — open them to retry.", [
+						done,
+						failed,
+					])
+				);
+			} finally {
+				// Always clear the progress bar and re-arm the button, even if the
+				// list query itself failed mid-way.
+				frappe.hide_progress();
+				batch_running = false;
+				listview.refresh();
 			}
-			frappe.hide_progress();
-			frappe.msgprint(
-				__("Batch finished: {0} read, {1} failed. Failed rows show their error — open them to retry.", [
-					done,
-					failed,
-				])
-			);
-			listview.refresh();
+		};
+
+		listview.page.add_inner_button(__("Read all pending"), () => {
+			read_all_pending();
 		});
 	},
 

@@ -158,7 +158,15 @@ doc_events = {
 	},
     "Workshop": {
         "validate": "fountainhead.api.calculate_costing_total_in_workshop"
-	}
+	},
+	# Bill OCR: on save, warn (never block) when the document's grand total does
+	# not tally with what the attached bill printed.
+	"Purchase Receipt": {
+		"validate": "fountainhead.bill_ocr.api.check_against_bill",
+	},
+	"Purchase Invoice": {
+		"validate": "fountainhead.bill_ocr.api.check_against_bill",
+	},
 }
 
 # Scheduled Tasks

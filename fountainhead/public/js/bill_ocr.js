@@ -39,7 +39,8 @@ fountainhead.bill_ocr = {
 		});
 	},
 
-	apply(frm, result) {
+	apply(frm, result, opts) {
+		opts = opts || {};
 		const filled = [];
 
 		if (result.fields.supplier && !frm.doc.supplier) {
@@ -55,8 +56,11 @@ fountainhead.bill_ocr = {
 			filled.push(__("Supplier Invoice Date"));
 		}
 
-		const rows = fountainhead.bill_ocr.fill_items(frm, result.items || []);
+		const rows = fountainhead.bill_ocr.fill_items(frm, result.items || [], opts.replace);
 		if (rows) filled.push(__("{0} item rows", [rows]));
+
+		const tax_rows = fountainhead.bill_ocr.fill_taxes(frm, result.taxes || [], opts.replace);
+		if (tax_rows) filled.push(__("GST into the Taxes table"));
 
 		frappe.show_alert({
 			message: filled.length
@@ -65,17 +69,36 @@ fountainhead.bill_ocr = {
 			indicator: filled.length ? "green" : "orange",
 		});
 
+		// Replay word-for-word memory: lines whose exact wording the user has
+		// answered before arrive with item_code set — assign them now so
+		// ERPNext fetches item name/UOM, and tell the user what happened.
+		const learned = (result.items || []).filter((l) => l.item_code && l.__rowname);
+		if (learned.length) {
+			(async () => {
+				for (const line of learned) {
+					await fountainhead.bill_ocr.assign_item(frm, line, line.item_code, { silent: true });
+				}
+				frappe.show_alert({
+					message: __("{0} item(s) filled from memory — you picked these for the same wording before.", [
+						learned.length,
+					]),
+					indicator: "green",
+				});
+			})();
+		}
+
 		fountainhead.bill_ocr.show_summary(frm, result);
 	},
 
 	// Adds one Items row per bill line with quantity and rate from the bill.
-	// item_code is left empty on purpose — the dialog assigns it.
-	fill_items(frm, items) {
+	// item_code stays empty unless the wording was LEARNED — the dialog assigns it.
+	fill_items(frm, items, replace) {
 		if (!items.length) return 0;
 
-		// Drop the blank starter row Frappe adds, but never discard real work.
+		// Drop the blank starter row Frappe adds, but never discard real work —
+		// except on an explicit re-read, where replacing IS the point.
 		const existing = (frm.doc.items || []).filter((d) => d.item_code);
-		if (existing.length) {
+		if (existing.length && !replace) {
 			frappe.show_alert({
 				message: __("Items table already has rows — leaving it alone."),
 				indicator: "orange",
@@ -97,10 +120,33 @@ fountainhead.bill_ocr = {
 		return items.length;
 	},
 
+	// The bill's GST goes into Purchase Taxes and Charges — ERPNext's grand total
+	// is items + this table, so leaving it empty made a 28,558 bill produce a
+	// 24,202 document. Account head comes from the company's own past receipts.
+	fill_taxes(frm, taxes, replace) {
+		if (!taxes.length) return 0;
+		const existing = (frm.doc.taxes || []).filter((t) => t.account_head);
+		if (existing.length && !replace) return 0;
+		frm.clear_table("taxes");
+		taxes.forEach((t) => {
+			frm.add_child("taxes", {
+				category: "Total",
+				add_deduct_tax: "Add",
+				charge_type: t.charge_type || "Actual",
+				account_head: t.account_head,
+				description: t.description,
+				tax_amount: t.tax_amount,
+			});
+		});
+		frm.refresh_field("taxes");
+		return taxes.length;
+	},
+
 	// Set item_code on a row, then restore the bill's quantity and rate —
 	// ERPNext's item_code handler refetches rate from the price list, which
 	// would otherwise overwrite what the bill actually says.
-	assign_item(frm, line, item_code) {
+	assign_item(frm, line, item_code, opts) {
+		opts = opts || {};
 		const dt = "Purchase Receipt Item";
 		return frappe.model
 			.set_value(dt, line.__rowname, "item_code", item_code)
@@ -108,10 +154,26 @@ fountainhead.bill_ocr = {
 			.then(() => frappe.model.set_value(dt, line.__rowname, "rate", line.rate || 0))
 			.then(() => {
 				frm.refresh_field("items");
-				frappe.show_alert({
-					message: __("Row {0}: {1}", [line.__idx + 1, item_code]),
-					indicator: "green",
-				});
+				if (!opts.silent) {
+					frappe.show_alert({
+						message: __("Row {0}: {1}", [line.__idx + 1, item_code]),
+						indicator: "green",
+					});
+				}
+				// Learn from MANUAL picks only — an auto-applied memory must not
+				// reinforce itself.
+				if (opts.remember) {
+					frappe.call({
+						method: "fountainhead.bill_ocr.api.remember_item_choice",
+						args: {
+							description: line.description,
+							description_en: line.description_en,
+							item_code: item_code,
+						},
+						// fire-and-forget; learning failure must never disturb entry
+						callback: () => {},
+					});
+				}
 			})
 			.catch(() => {
 				frappe.show_alert({
@@ -288,6 +350,31 @@ fountainhead.bill_ocr = {
 			.map(([k, v]) => `<tr><td>${k}</td><td class="text-right">${v}</td></tr>`)
 			.join("");
 
+		// Will the filled document tally with the bill? Shown FIRST, because a
+		// mismatch means something was misread and everything below it is suspect.
+		const p = result.projection || {};
+		const tally_html =
+			p.bill_grand != null
+				? p.tallies
+					? `<div class="alert alert-success" style="margin-top:12px">
+							✓ ${__("Tallies: the rows will total {0}{1}{2} = {3}, and the bill prints {3}.", [
+								money(p.items_total),
+								p.gst_total && !p.lines_tax_inclusive ? " + GST " + money(p.gst_total) : "",
+								p.round_off ? " " + (p.round_off > 0 ? "+" : "−") + " " + money(Math.abs(p.round_off)) : "",
+								money(p.bill_grand),
+							])}</div>`
+					: `<div class="alert alert-danger" style="margin-top:12px">
+							<b>✗ ${__("Does not tally.")}</b>
+							${__("The rows will total {0}{1} = {2}, but the bill prints {3}.", [
+								money(p.items_total),
+								p.gst_total && !p.lines_tax_inclusive ? " + GST " + money(p.gst_total) : "",
+								money(p.expected_grand),
+								money(p.bill_grand),
+							])}
+							${__("Something was misread or missed — say what, below, and it will be re-read.")}
+						</div>`
+				: "";
+
 		const notes = (result.notes || []).length
 			? `<div class="alert alert-warning" style="margin-top:12px">
 					<ul style="margin:0;padding-left:18px">
@@ -296,34 +383,75 @@ fountainhead.bill_ocr = {
 				</div>`
 			: "";
 
+		// Plain-English correction box: the user says what's wrong in their own
+		// words ("the 2,250 is a 20% supervision charge, not a work line") and the
+		// bill is re-read with that as reviewer instruction. Costs one fresh read.
+		// COLLAPSED by default — most bills are fine, so it stays out of the way
+		// until the user reaches for it.
+		const feedback_html = `
+			<div style="margin-top:12px; border:1px dashed var(--border-color); border-radius:6px">
+				<div class="bill-ocr-fb-toggle" style="padding:9px 12px; cursor:pointer; user-select:none">
+					<span class="bill-ocr-fb-arrow" style="display:inline-block; transition:transform .15s">▸</span>
+					<b style="margin-left:5px">${__("Something wrong or missing?")}</b>
+					<span class="small text-muted"> — ${__("tap to describe it and re-read")}</span>
+				</div>
+				<div class="bill-ocr-fb-body" style="display:none; padding:0 12px 12px">
+					<div class="small text-muted" style="margin-bottom:6px">
+						${__("Describe it in plain words — e.g. “the 2,250 is a 20% supervision charge on the labour total”. The bill will be re-read with your correction (takes ~10s, replaces the rows).")}
+					</div>
+					<textarea class="form-control bill-ocr-feedback" rows="2"
+						placeholder="${__("What did it get wrong?")}"></textarea>
+					<button class="btn btn-sm btn-default bill-ocr-reread" style="margin-top:6px">
+						${__("Re-read with this correction")}
+					</button>
+				</div>
+			</div>`;
+
 		// The nature of the expense, read off the bill. Offered as a starting point
 		// for the mandatory Reason for Purchase — the user still owns the wording,
 		// since the real reason ("Grade 5 exam papers") is context no bill carries.
+		// The button TOGGLES: insert ↔ undo (restores whatever was there before).
 		const category = (result.suggestions || {}).expense_category;
-		const reason_html =
-			category && !frm.doc.custom_reason_for_purchase
-				? `<div class="alert alert-info" style="margin-top:12px">
-						<b>${__("Reason for Purchase")}:</b> ${frappe.utils.escape_html(category)}
-						<button class="btn btn-xs btn-default bill-ocr-reason" style="margin-left:8px">
-							${__("Use as starting point")}
-						</button>
-						<div class="small text-muted">
-							${__("Read off the bill — edit it into the real reason after inserting.")}
-						</div>
-					</div>`
-				: "";
-
-		const suggestion = (result.suggestions || {}).custom_item_group;
-		const suggestion_html = suggestion
+		const reason_html = category
 			? `<div class="alert alert-info" style="margin-top:12px">
-					<b>${__("Suggested Item Group")}:</b> ${frappe.utils.escape_html(suggestion.item_group)}
+					<b>${__("Reason for Purchase")}:</b> ${frappe.utils.escape_html(category)}
+					<button class="btn btn-xs btn-default bill-ocr-reason" style="margin-left:8px">
+						${__("Use as starting point")}
+					</button>
 					<div class="small text-muted">
-						${__("From this supplier's previous receipts — {0} of them, {1}% of their history.", [
-							suggestion.seen,
-							suggestion.share,
-						])}
-						${__("This decides who approves the document, so it is not filled in for you.")}
+						${__("Read off the bill — edit it into the real reason after inserting. Click again to undo.")}
 					</div>
+				</div>`
+			: "";
+
+		// Item Group: the header holds exactly ONE group and it decides the
+		// approver. A supplier whose history spans groups gets each meaningful
+		// group as its own button — for a mixed bill the user must decide which
+		// approval chain this document goes down. Buttons toggle (apply ↔ undo).
+		const suggestion = (result.suggestions || {}).custom_item_group;
+		const group_options = suggestion
+			? [suggestion, ...(suggestion.others || [])]
+			: [];
+		const suggestion_html = group_options.length
+			? `<div class="alert alert-info" style="margin-top:12px">
+					<b>${__("Suggested Item Group")}</b>
+					<span class="small text-muted">— ${__("decides who approves; not filled in for you. Click to apply, click again to undo.")}</span><br>
+					${group_options
+						.map(
+							(g) => `<button class="btn btn-xs btn-default bill-ocr-group" style="margin:6px 6px 0 0"
+								data-group="${frappe.utils.escape_html(g.item_group)}">
+								${__("Use")} ${frappe.utils.escape_html(g.item_group)}
+								<span class="text-muted">${g.share}% · ${g.seen}×</span>
+							</button>`
+						)
+						.join("")}
+					${
+						group_options.length > 1
+							? `<div class="small text-muted" style="margin-top:5px">${__(
+									"This supplier's history spans more than one group. If the bill mixes them, pick the group whose approver should own this document."
+							  )}</div>`
+							: ""
+					}
 				</div>`
 			: "";
 
@@ -339,7 +467,9 @@ fountainhead.bill_ocr = {
 					? cands
 							.map((c) => {
 								const tag =
-									c.basis === "usual"
+									c.basis === "learned"
+										? `<span class="text-muted">✓ ${__("you taught this — auto-filled")}</span>`
+										: c.basis === "usual"
 										? `<span class="text-muted">· ${__("their usual, {0}×", [
 												c.times_used,
 										  ])}</span>`
@@ -348,7 +478,8 @@ fountainhead.bill_ocr = {
 													? " ·&nbsp;" + __("used {0}×", [c.times_used])
 													: ""
 										  }</span>`;
-								return `<button class="btn btn-xs btn-default bill-ocr-pick"
+								const applied = c.basis === "learned" && line.item_code === c.item_code;
+								return `<button class="btn btn-xs ${applied ? "btn-primary" : "btn-default"} bill-ocr-pick"
 										style="margin:2px 4px 2px 0"
 										data-line="${i}" data-code="${frappe.utils.escape_html(c.item_code)}">
 										${frappe.utils.escape_html(c.item_name || c.item_code)} ${tag}
@@ -376,8 +507,14 @@ fountainhead.bill_ocr = {
 						</div>`
 					: "";
 
+				const charge_tag = line.is_charge
+					? ` <span class="indicator-pill orange" style="font-size:11px">${__(
+							"charge on top of items"
+					  )}</span>`
+					: "";
+
 				return `<div style="padding:8px 0;border-bottom:1px solid var(--border-color)">
-					<div><b>${__("Row")} ${i + 1}.</b> ${frappe.utils.escape_html(line.description || "")}</div>
+					<div><b>${__("Row")} ${i + 1}.</b> ${frappe.utils.escape_html(line.description || "")}${charge_tag}</div>
 					${translated}
 					<div class="small text-muted" style="margin:2px 0 6px">
 						${__("Qty")} ${line.quantity ?? "—"} × ${money(line.rate)} = ${money(line.amount)}
@@ -392,6 +529,25 @@ fountainhead.bill_ocr = {
 			size: "large",
 			primary_action_label: __("Done"),
 			primary_action: () => d.hide(),
+			// The reload: "something looks off but I can't name it". Reads the bill
+			// again from scratch in careful mode — cache bypassed, every digit and
+			// spelling re-verified — and REPLACES the rows with the new reading.
+			// (When the user CAN name the problem, the correction box below is
+			// better: their words steer the re-read.)
+			secondary_action_label: __("↻ Read again, carefully"),
+			secondary_action: () => {
+				frappe.call({
+					method: "fountainhead.bill_ocr.api.reread_bill",
+					args: { file_url: frm.doc.custom_attachment, doctype: frm.doctype },
+					freeze: true,
+					freeze_message: __("Re-reading the bill carefully — every figure re-verified…"),
+					callback: (r) => {
+						if (!r.message) return;
+						d.hide();
+						fountainhead.bill_ocr.apply(frm, r.message, { replace: true });
+					},
+				});
+			},
 		});
 
 		d.$body.html(`
@@ -406,6 +562,7 @@ fountainhead.bill_ocr = {
 						: ""
 				}</p>
 			<table class="table table-bordered table-condensed">${totals_rows}</table>
+			${tally_html}
 			${suggestion_html}
 			${reason_html}
 			${notes}
@@ -413,20 +570,72 @@ fountainhead.bill_ocr = {
 				(result.items || []).length
 					? `<h5 style="margin-top:16px">${__("Items")} (${result.items.length})</h5>
 						<p class="text-muted small">${__(
-							"Quantity and rate are already filled into the Items table. Click an item below to set that row's Item Code — the item is never chosen for you, because the wrong one would silently affect stock."
+							"Quantity and rate are already filled into the Items table. Click an item below to set that row's Item Code — your choice is remembered, and next time the same wording is filled in automatically."
 						)}</p>
 						<div style="max-height:300px;overflow:auto">${lines_html}</div>`
 					: ""
 			}
+			${feedback_html}
 		`);
 
+		// Reason: TOGGLE — insert, or click again to restore what was there before.
+		let reason_prev = null;
+		let reason_applied = false;
 		d.$body.on("click", ".bill-ocr-reason", function () {
-			frm.set_value("custom_reason_for_purchase", category);
-			$(this).prop("disabled", true).text(__("Inserted — edit it on the form"));
-			frappe.show_alert({
-				message: __("Reason inserted — refine it into the actual purpose."),
-				indicator: "blue",
+			if (!reason_applied) {
+				reason_prev = frm.doc.custom_reason_for_purchase || "";
+				frm.set_value("custom_reason_for_purchase", category);
+				reason_applied = true;
+				$(this).removeClass("btn-default").addClass("btn-primary").text(__("Undo — restore previous"));
+				frappe.show_alert({ message: __("Reason inserted — refine it into the actual purpose."), indicator: "blue" });
+			} else {
+				frm.set_value("custom_reason_for_purchase", reason_prev);
+				reason_applied = false;
+				$(this).removeClass("btn-primary").addClass("btn-default").text(__("Use as starting point"));
+				frappe.show_alert({ message: __("Reason restored."), indicator: "blue" });
+			}
+		});
+
+		// Item Group buttons: apply one (others reset), click the applied one to undo.
+		// The label states the mode explicitly — "Use X" when idle, "✓ Using X — tap
+		// to undo" when applied — so the state is readable without knowing the colours.
+		let group_prev = null;
+		let group_applied = null;
+		const reset_group_btns = () => {
+			d.$body.find(".bill-ocr-group").each(function () {
+				const orig = $(this).data("orig");
+				if (orig) $(this).html(orig);
+				$(this).removeClass("btn-primary").addClass("btn-default");
 			});
+		};
+		d.$body.on("click", ".bill-ocr-group", function () {
+			const g = $(this).data("group");
+			if (!$(this).data("orig")) $(this).data("orig", $(this).html());
+			if (group_applied === g) {
+				frm.set_value("custom_item_group", group_prev);
+				group_applied = null;
+				reset_group_btns();
+				frappe.show_alert({ message: __("Item Group restored to “{0}”.", [group_prev || __("empty")]), indicator: "blue" });
+				return;
+			}
+			if (group_applied === null) group_prev = frm.doc.custom_item_group || "";
+			frm.set_value("custom_item_group", g);
+			group_applied = g;
+			reset_group_btns();
+			$(this)
+				.removeClass("btn-default")
+				.addClass("btn-primary")
+				.html(`✓ ${__("Using")} ${frappe.utils.escape_html(g)} — ${__("tap to undo")}`);
+			frappe.show_alert({ message: __("Item Group set to {0}.", [g]), indicator: "green" });
+		});
+
+		// Collapsible correction section.
+		d.$body.on("click", ".bill-ocr-fb-toggle", function () {
+			const body = d.$body.find(".bill-ocr-fb-body");
+			const open = body.is(":visible");
+			body.slideToggle(120);
+			d.$body.find(".bill-ocr-fb-arrow").css("transform", open ? "rotate(0deg)" : "rotate(90deg)");
+			if (!open) setTimeout(() => d.$body.find(".bill-ocr-feedback").focus(), 150);
 		});
 
 		d.$body.on("click", ".bill-ocr-create", function () {
@@ -439,7 +648,8 @@ fountainhead.bill_ocr = {
 			const code = $(this).data("code");
 			const line = result.items[idx];
 			if (!line || !line.__rowname) return;
-			fountainhead.bill_ocr.assign_item(frm, line, code);
+			// A manual pick is a human decision — remember it for next time.
+			fountainhead.bill_ocr.assign_item(frm, line, code, { remember: true });
 			$(this)
 				.closest("div")
 				.find(".bill-ocr-pick")
@@ -448,16 +658,30 @@ fountainhead.bill_ocr = {
 			$(this).removeClass("btn-default").addClass("btn-primary");
 		});
 
-		if (suggestion) {
-			d.set_secondary_action_label(__("Use {0}", [suggestion.item_group]));
-			d.set_secondary_action(() => {
-				frm.set_value("custom_item_group", suggestion.item_group);
-				frappe.show_alert({
-					message: __("Item Group set to {0}", [suggestion.item_group]),
-					indicator: "green",
-				});
+		// Plain-English correction → re-read → replace the rows with the new reading.
+		d.$body.on("click", ".bill-ocr-reread", function () {
+			const feedback = (d.$body.find(".bill-ocr-feedback").val() || "").trim();
+			if (!feedback) {
+				frappe.show_alert({ message: __("Write what is wrong first."), indicator: "orange" });
+				return;
+			}
+			frappe.call({
+				method: "fountainhead.bill_ocr.api.reinterpret_bill",
+				args: {
+					file_url: frm.doc.custom_attachment,
+					doctype: frm.doctype,
+					feedback: feedback,
+				},
+				freeze: true,
+				freeze_message: __("Re-reading the bill with your correction…"),
+				callback: (r) => {
+					if (!r.message) return;
+					d.hide();
+					// Replace: this is an explicit re-read, so the old rows go.
+					fountainhead.bill_ocr.apply(frm, r.message, { replace: true });
+				},
 			});
-		}
+		});
 
 		d.show();
 	},
