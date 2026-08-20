@@ -8,18 +8,54 @@
 frappe.listview_settings["Bill OCR Upload"] = {
 	hide_name_column: true,
 
+	// Finished work stays out of the working list — "जिसका processing पूरा खत्म
+	// हो गया, वो नहीं देखूं" (19 Aug). Remove the filter chip to see everything.
+	filters: [["status", "!=", "Receipt created"]],
+
+	// A small thumbnail of the scan: accountants sit with the paper bill in hand
+	// and tick off against the screen, so the picture identifies a row faster
+	// than any text. PDFs get a badge instead of an image.
+	formatters: {
+		bill_file(value) {
+			if (!value) return "";
+			const url = frappe.utils.escape_html(value);
+			if (/\.pdf(\?|$)/i.test(value)) {
+				return `<a href="${url}" target="_blank" rel="noopener"
+					class="indicator-pill gray" style="font-size:10px">PDF</a>`;
+			}
+			return `<a href="${url}" target="_blank" rel="noopener">
+				<img src="${url}" loading="lazy" alt=""
+					style="height:32px;width:44px;object-fit:cover;border-radius:3px;
+						border:1px solid var(--border-color);vertical-align:middle"></a>`;
+		},
+	},
+
 	onload(listview) {
 		listview.page.add_inner_button(__("Upload bills"), () => {
+			// Queue rows are inserted one after another, never concurrently.
+			// Every insert draws the next BOCR-#### number from the same series
+			// row; parallel inserts deadlock on that lock and the server rejects
+			// one with "Deadlock Occurred — concurrent conflicting request".
+			let insert_chain = Promise.resolve();
+			const insert_row = (file_url) =>
+				frappe.db.insert({ doctype: "Bill OCR Upload", bill_file: file_url });
 			new frappe.ui.FileUploader({
 				allow_multiple: true,
 				restrictions: {
 					allowed_file_types: ["image/jpeg", "image/png", "image/webp", "application/pdf"],
 				},
 				on_success(file) {
-					// One queue row per uploaded file.
-					frappe.db
-						.insert({ doctype: "Bill OCR Upload", bill_file: file.file_url })
-						.then(() => listview.refresh());
+					insert_chain = insert_chain
+						.then(() => insert_row(file.file_url))
+						// One retry — another user's insert can still collide.
+						.catch(() => insert_row(file.file_url))
+						.then(() => listview.refresh())
+						.catch(() => {
+							frappe.show_alert({
+								message: __("Could not queue {0} — upload it again.", [file.file_url]),
+								indicator: "red",
+							});
+						});
 				},
 			});
 		});
@@ -89,6 +125,7 @@ frappe.listview_settings["Bill OCR Upload"] = {
 		return {
 			Pending: [__("Pending"), "orange", "status,=,Pending"],
 			Read: [__("Read"), "green", "status,=,Read"],
+			"Receipt created": [__("Receipt created"), "blue", "status,=,Receipt created"],
 			Error: [__("Error"), "red", "status,=,Error"],
 		}[doc.status];
 	},

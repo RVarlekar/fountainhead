@@ -10,6 +10,7 @@
   "target_doctype",
   "column_break_main",
   "status",
+  "created_document",
   "error_message",
   "section_read",
   "vendor_name",
@@ -49,7 +50,15 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Status",
-   "options": "Pending\nRead\nError",
+   "options": "Pending\nRead\nReceipt created\nError",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.status=='Receipt created'",
+   "description": "The Purchase Receipt / Invoice this bill became. Set automatically when that document is saved with this bill attached.",
+   "fieldname": "created_document",
+   "fieldtype": "Data",
+   "label": "Created document",
    "read_only": 1
   },
   {
@@ -76,6 +85,7 @@
   {
    "fieldname": "supplier",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Matched Supplier",
    "options": "Supplier",
    "read_only": 1
@@ -134,7 +144,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-08-17 16:00:00.000000",
+ "modified": "2026-08-19 21:00:00.000000",
  "modified_by": "Administrator",
  "module": "Fountainhead",
  "name": "Bill OCR Upload",

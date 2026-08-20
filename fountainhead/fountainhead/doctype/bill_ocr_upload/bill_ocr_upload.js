@@ -34,5 +34,20 @@ frappe.ui.form.on("Bill OCR Upload", {
 				frappe.new_doc(target);
 			});
 		}
+
+		if (frm.doc.status === "Receipt created" && frm.doc.created_document) {
+			// "Purchase Receipt MAT-PRE-2026-00042" → a link to that document.
+			const parts = frm.doc.created_document.split(" ");
+			const name = parts.pop();
+			const doctype = parts.join(" ");
+			frm.set_intro(
+				__("This bill became {0} — processing is complete.", [
+					`<a href="/app/${frappe.router.slug(doctype)}/${encodeURIComponent(name)}">${frappe.utils.escape_html(
+						frm.doc.created_document
+					)}</a>`,
+				]),
+				"blue"
+			);
+		}
 	},
 });

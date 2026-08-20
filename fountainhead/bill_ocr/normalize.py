@@ -405,6 +405,23 @@ def normalize(raw):
 			"lineAmount": parse_number(line.get("lineAmount")),
 		})
 	data["lines"] = lines
+
+	# Per-page subtotals from multi-page scans — kept only where they parse; the
+	# tally warning uses them to say what each page held.
+	pages = []
+	for p in data.get("pageSummaries") or []:
+		if not isinstance(p, dict):
+			continue
+		page_no = parse_number(p.get("page"))
+		if page_no is None:
+			continue
+		pages.append({
+			"page": int(page_no),
+			"lineCount": int(parse_number(p.get("lineCount")) or 0),
+			"itemsSubtotal": parse_number(p.get("itemsSubtotal")),
+		})
+	data["pageSummaries"] = sorted(pages, key=lambda p: p["page"])
+
 	inclusive = lines_are_tax_inclusive(data)
 	data["linesTaxInclusive"] = inclusive
 	notes.extend(reconcile_lines(lines, tax_inclusive=inclusive))
