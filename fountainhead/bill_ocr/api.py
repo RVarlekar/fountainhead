@@ -261,6 +261,17 @@ def reinterpret_bill(file_url, doctype="Purchase Receipt", feedback=None, compan
 	return _serve(payload, company)
 
 
+def _resolve_company(company=None):
+	company = (
+		company
+		or frappe.defaults.get_user_default("Company")
+		or frappe.db.get_single_value("Global Defaults", "default_company")
+	)
+	if not company or not frappe.db.exists("Company", company):
+		return None
+	return company
+
+
 def _entity_books_gst(company=None):
 	"""Does this entity book GST as separate tax rows?
 
@@ -270,12 +281,8 @@ def _entity_books_gst(company=None):
 	the breakup. The switch is a Company field so each instance/entity answers
 	for itself — nothing is hard-coded to a school.
 	"""
-	company = (
-		company
-		or frappe.defaults.get_user_default("Company")
-		or frappe.db.get_single_value("Global Defaults", "default_company")
-	)
-	if not company or not frappe.db.exists("Company", company):
+	company = _resolve_company(company)
+	if not company:
 		return False
 	return bool(cint(frappe.db.get_value("Company", company, "custom_gst_registered") or 0))
 
@@ -291,7 +298,7 @@ def _serve(payload, company=None):
 	  queue for days after it was first read.
 	"""
 	if not _entity_books_gst(company):
-		_fold_gst_into_items(payload)
+		_book_gst_as_cost(payload, company)
 	else:
 		# Registered entity, GST printed, but no account head was found to book it.
 		p = payload.get("projection") or {}
@@ -306,80 +313,118 @@ def _serve(payload, company=None):
 	return payload
 
 
-def _fold_gst_into_items(payload):
-	"""Fold the bill's GST (and round-off) into the item rates.
+def _cost_head_for_supplier(supplier, company):
+	"""The expense account this supplier's bills usually book to.
 
-	For an entity without GST registration the tax is genuinely part of the cost
-	— the pencil bought at 7.20 + 18% IS an 8.00 pencil (Chetan sir's own worked
-	example, M8). So instead of tax rows, each line's rate is grossed up
-	pro-rata by its share of the bill, and the items alone total the printed
-	grand total. Charge rows (supervision %, freight) are left alone — they are
-	usually untaxed — and any rounding residual lands on the largest line so the
-	total is exact.
+	The charge row must land in the SAME P&L head as the goods (that is what the
+	accountant's manual entry does today), and the head is not knowable from the
+	bill itself — so it is read from the company's own history: the expense
+	account this supplier's submitted Purchase Invoice lines used most. Falls
+	back to the company-wide favourite when the supplier is new or unmatched.
 	"""
-	totals = payload.get("totals") or {}
-	proj = payload.get("projection") or {}
-	target = totals.get("grand_total") or proj.get("bill_grand")
-	items = payload.get("items") or []
-	base = [i for i in items if not i.get("is_charge") and (i.get("amount") or 0) > 0]
+	for filters in (
+		{"supplier": supplier, "company": company},
+		{"company": company},
+	):
+		if not all(filters.values()):
+			continue
+		rows = frappe.db.sql(
+			"""
+			select pii.expense_account, count(*) n
+			from `tabPurchase Invoice Item` pii
+			join `tabPurchase Invoice` pi on pii.parent = pi.name
+			where pi.docstatus = 1 and pi.company = %(company)s
+			  and ifnull(pii.expense_account, '') != ''
+			  {supplier_clause}
+			group by pii.expense_account
+			order by n desc
+			limit 1
+			""".format(
+				supplier_clause="and pi.supplier = %(supplier)s" if filters.get("supplier") else ""
+			),
+			filters,
+		)
+		if rows and rows[0][0] and frappe.db.get_value("Account", rows[0][0], "disabled") == 0:
+			return rows[0][0]
+	return None
 
-	had_taxes = bool(payload.get("taxes"))
+
+def _book_gst_as_cost(payload, company=None):
+	"""For an entity without GST registration: book the bill's GST (and printed
+	round-off) as a plain charge row into the items' own expense head.
+
+	Version 3 of this behaviour, per the 19/20 Aug decisions:
+	* v1 (tax rows to a GST account) — rejected: the school does no separate GST
+	  accounting (D21).
+	* v2 (gross the item rates up by the GST) — rejected by Vardan sir: the
+	  accountant compares the screen against the paper bill line by line, so
+	  the on-screen rates must stay EXACTLY as printed.
+	* v3 (this): items stay at printed rates; one charge row (category "Total",
+	  never a GST ledger) carries GST + round-off, pointed at the expense head
+	  this supplier's own past invoices book to — so the P&L shows the full
+	  cost in the same head as the goods, exactly like today's manual entry.
+	  Verified empirically that "Valuation and Total" degrades to "Total"
+	  anyway when the Invoice is created from the Receipt, and that service
+	  items never absorb valuation charges — a plain Total row is the one shape
+	  that behaves identically for PR/PI, stock/service.
+
+	Only the PRINTED GST + round-off is ever booked — an unexplained gap between
+	the lines and the printed total stays visible and fails the tally, because
+	absorbing it would hide a misread.
+	"""
+	proj = payload.get("projection") or {}
 	payload["taxes"] = []
 
-	if not target or not base:
+	if proj.get("lines_tax_inclusive"):
+		return  # the printed line amounts already carry the tax — nothing to add
+
+	gst = round(float(proj.get("gst_total") or 0), 2)
+	roff = round(float(proj.get("round_off") or 0), 2)
+	amount = round(gst + roff, 2)
+	if gst <= 0 or amount <= 0:
 		return
 
-	items_total = round(sum(i.get("amount") or 0 for i in items), 2)
-	extra = round(float(target) - items_total, 2)
-	if abs(extra) < 0.005:
-		_reproject(payload, target)
+	head = _cost_head_for_supplier((payload.get("fields") or {}).get("supplier"), _resolve_company(company))
+	if not head:
+		payload.setdefault("notes", []).insert(0, _(
+			"⚠ This bill carries GST of {0}, but no expense account could be inferred "
+			"from past invoices — add a charge row of {1} (category Total) to the Taxes "
+			"table yourself, or the document will total less than the bill.").format(
+			frappe.format_value(gst, {"fieldtype": "Currency"}),
+			frappe.format_value(amount, {"fieldtype": "Currency"}),
+		))
 		return
-	# Nothing printed says the gap is tax; folding an unexplained gap into the
-	# rates would hide a misread. Only fold what the bill accounts for.
-	explained = round((proj.get("gst_total") or 0) + (proj.get("round_off") or 0), 2)
-	if not had_taxes and abs(extra - explained) > 1:
-		_reproject(payload, target)
-		return
 
-	def set_inclusive(item, amount):
-		qty = item.get("quantity") or 1
-		item["amount"] = round(amount, 2)
-		item["rate"] = round(amount / qty, 6) if qty else round(amount, 2)
+	if roff:
+		description = _("GST {0} {1} round-off {2} as printed — booked into item cost (no GST registration)").format(
+			frappe.format_value(gst, {"fieldtype": "Currency"}),
+			"+" if roff > 0 else "−",
+			frappe.format_value(abs(roff), {"fieldtype": "Currency"}),
+		)
+	else:
+		description = _("GST {0} as printed — booked into item cost (no GST registration)").format(
+			frappe.format_value(gst, {"fieldtype": "Currency"})
+		)
 
-	snapshot = {id(i): i.get("amount") or 0 for i in base}
-	base_total = sum(snapshot.values())
-	largest = max(base, key=lambda i: snapshot[id(i)])
-	remaining = extra
-	for item in base:
-		if item is largest:
-			continue
-		share = round(extra * (snapshot[id(item)] / base_total), 2)
-		set_inclusive(item, snapshot[id(item)] + share)
-		remaining = round(remaining - share, 2)
-	set_inclusive(largest, snapshot[id(largest)] + remaining)
-
-	_reproject(payload, target)
-	payload["projection"]["gst_in_rates"] = True
+	payload["taxes"] = [{
+		"charge_type": "Actual",
+		"category": "Total",
+		"add_deduct_tax": "Add",
+		"account_head": head,
+		"description": description,
+		"tax_amount": amount,
+	}]
+	payload.setdefault("projection", {})["gst_in_cost"] = True
 	payload.setdefault("notes", []).append(_(
-		"This company books GST-inclusive costs (no GST registration), so the bill's GST "
-		"of {0} was folded into the item rates instead of separate tax rows — the rows "
-		"book the printed total of {1}. The printed breakup stays above for checking."
+		"This company books GST as part of the item cost (no GST registration): the "
+		"bill's GST of {0} goes in as one charge row into {1} — the same head the "
+		"items book to — so the document totals the printed {2}. Item rates stay "
+		"exactly as printed on the bill."
 	).format(
-		frappe.format_value(proj.get("gst_total") or extra, {"fieldtype": "Currency"}),
-		frappe.format_value(target, {"fieldtype": "Currency"}),
+		frappe.format_value(gst, {"fieldtype": "Currency"}),
+		head,
+		frappe.format_value(proj.get("bill_grand"), {"fieldtype": "Currency"}),
 	))
-
-
-def _reproject(payload, target):
-	"""Recompute the tally projection after items changed and tax rows left."""
-	items = payload.get("items") or []
-	items_total = round(sum(i.get("amount") or 0 for i in items), 2)
-	proj = payload.setdefault("projection", {})
-	proj["items_total"] = items_total
-	proj["expected_grand"] = items_total
-	proj["round_off"] = 0
-	proj["lines_tax_inclusive"] = True  # the rows now carry the tax inside them
-	proj["tallies"] = target is not None and abs(items_total - float(target)) <= 1
 
 
 def _late_bill_note(payload):

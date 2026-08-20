@@ -132,8 +132,10 @@ fountainhead.bill_ocr = {
 		frm.clear_table("taxes");
 		taxes.forEach((t) => {
 			frm.add_child("taxes", {
-				category: "Total",
-				add_deduct_tax: "Add",
+				// The payload decides the shape: a GST entity gets tax rows, a
+				// non-GST entity gets one cost row into the items' expense head.
+				category: t.category || "Total",
+				add_deduct_tax: t.add_deduct_tax || "Add",
 				charge_type: t.charge_type || "Actual",
 				account_head: t.account_head,
 				description: t.description,
@@ -355,12 +357,12 @@ fountainhead.bill_ocr = {
 		// Will the filled document tally with the bill? Shown FIRST, because a
 		// mismatch means something was misread and everything below it is suspect.
 		const p = result.projection || {};
-		// GST shown as a separate term only when it will actually book as tax rows —
-		// when it was folded into the rates (non-GST entity) the rows already carry it.
-		const show_gst = p.gst_total && !p.lines_tax_inclusive && !p.gst_in_rates;
-		const folded_note = p.gst_in_rates
+		// The GST term shows whenever it books on top of the lines — as tax rows
+		// (GST entity) or as a cost row into the items' expense head (non-GST).
+		const show_gst = p.gst_total && !p.lines_tax_inclusive;
+		const folded_note = p.gst_in_cost
 			? `<div class="small" style="margin-top:4px">${__(
-					"GST of {0} is included in the item rates — this company books GST-inclusive costs, no separate tax rows.",
+					"GST of {0} is booked as part of item cost — one charge row into the items' expense head. Item rates stay exactly as printed; no GST ledger is touched.",
 					[money(p.gst_total)]
 			  )}</div>`
 			: "";
