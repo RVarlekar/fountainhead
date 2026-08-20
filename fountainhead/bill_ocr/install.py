@@ -14,6 +14,24 @@ import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 BILL_OCR_FIELDS = {
+	# The entity-level GST switch decided in the 19 Aug review: the school has no
+	# GST registration and books GST-inclusive totals (98.1% of its receipts carry
+	# no tax rows), while Protego-side entities are registered and keep the breakup.
+	# Which behaviour Bill OCR applies is a property of the Company, not the bill.
+	"Company": [
+		{
+			"fieldname": "custom_gst_registered",
+			"label": "GST registered (Bill OCR books tax rows)",
+			"fieldtype": "Check",
+			"insert_after": "tax_id",
+			"default": "0",
+			"description": (
+				"Ticked: Bill OCR fills the bill's GST into the Taxes table as separate rows. "
+				"Unticked (entities without GST registration): GST is folded into the item "
+				"rates and the document books the bill's GST-inclusive total."
+			),
+		},
+	],
 	"Item": [
 		{
 			"fieldname": "custom_bill_ocr_section",

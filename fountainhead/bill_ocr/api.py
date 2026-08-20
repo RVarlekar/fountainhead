@@ -42,6 +42,21 @@ def _find_duplicates(supplier, bill_no):
 	return found
 
 
+def _same_day_bills(supplier, bill_date, bill_no):
+	"""Other Receipts/Invoices from this supplier dated the same day, under a
+	different invoice number. Cancelled documents don't count."""
+	if not supplier or not bill_date:
+		return []
+	found = []
+	for doctype in SUPPORTED_DOCTYPES:
+		filters = {"supplier": supplier, "bill_date": bill_date, "docstatus": ["<", 2]}
+		if bill_no:
+			filters["bill_no"] = ["!=", bill_no]
+		for name in frappe.get_all(doctype, filters=filters, pluck="name", limit_page_length=3):
+			found.append({"doctype": doctype, "name": name})
+	return found
+
+
 def _load_attachment(file_url):
 	"""Fetch the attached file, enforcing the caller's own read permission on it."""
 	name = frappe.db.get_value("File", {"file_url": file_url}, "name")
@@ -181,12 +196,13 @@ def get_creation_defaults(item_group=None, unit=None):
 
 
 @frappe.whitelist()
-def extract_bill(file_url, doctype="Purchase Receipt"):
+def extract_bill(file_url, doctype="Purchase Receipt", company=None):
 	"""Read an attached bill and return values for the form to fill in.
 
 	Args:
 		file_url: the `custom_attachment` value on the open document.
 		doctype:  Purchase Receipt or Purchase Invoice.
+		company:  the document's company — decides the GST treatment (see _serve).
 
 	Returns a dict the client applies field by field. Nothing is written here.
 
@@ -194,17 +210,21 @@ def extract_bill(file_url, doctype="Purchase Receipt"):
 	re-upload of the same photo counts as the same bill). Reloading the page and
 	re-attaching, or attaching a bill the batch queue already read, reuses the
 	stored reading — the same bill is never paid for twice.
+
+	The cache stores the RAW reading; company-dependent treatment (GST fold) and
+	time-dependent warnings (a bill going stale in the queue) are applied at
+	serve time, so a cached reading behaves exactly like a fresh one would today.
 	"""
 	cached = _cached_payload(file_url)
 	if cached is not None:
-		return cached
+		return _serve(cached, company)
 	payload = _run_extraction(file_url, doctype)
 	_store_cache(file_url, payload)
-	return payload
+	return _serve(payload, company)
 
 
 @frappe.whitelist()
-def reread_bill(file_url, doctype="Purchase Receipt"):
+def reread_bill(file_url, doctype="Purchase Receipt", company=None):
 	"""Read the bill again from scratch, in careful mode — the dialog's reload.
 
 	For "something looks off but I can't name it": the cache is bypassed and the
@@ -217,11 +237,11 @@ def reread_bill(file_url, doctype="Purchase Receipt"):
 		0, _("Re-read from scratch in careful mode — every figure re-verified against the image.")
 	)
 	_store_cache(file_url, payload)
-	return payload
+	return _serve(payload, company)
 
 
 @frappe.whitelist()
-def reinterpret_bill(file_url, doctype="Purchase Receipt", feedback=None):
+def reinterpret_bill(file_url, doctype="Purchase Receipt", feedback=None, company=None):
 	"""Re-read the bill with a correction the user wrote in plain English.
 
 	This is the "no, that calculation is wrong, and here is why" path: the
@@ -238,7 +258,163 @@ def reinterpret_bill(file_url, doctype="Purchase Receipt", feedback=None):
 		0, _("Re-read with your correction applied: “{0}”").format(feedback[:140])
 	)
 	_store_cache(file_url, payload)
+	return _serve(payload, company)
+
+
+def _entity_books_gst(company=None):
+	"""Does this entity book GST as separate tax rows?
+
+	Decided in the 19 Aug review: the school has no GST registration, takes no
+	input credit, and books the GST-INCLUSIVE total (98.1% of its 3,299 submitted
+	receipts carry no tax rows). Protego-side entities are registered and keep
+	the breakup. The switch is a Company field so each instance/entity answers
+	for itself — nothing is hard-coded to a school.
+	"""
+	company = (
+		company
+		or frappe.defaults.get_user_default("Company")
+		or frappe.db.get_single_value("Global Defaults", "default_company")
+	)
+	if not company or not frappe.db.exists("Company", company):
+		return False
+	return bool(cint(frappe.db.get_value("Company", company, "custom_gst_registered") or 0))
+
+
+def _serve(payload, company=None):
+	"""Company- and time-dependent adjustments, applied every time a reading is
+	served — fresh or cached — so the cache stays raw and reusable.
+
+	* GST treatment (per _entity_books_gst): registered entities keep the tax
+	  rows; unregistered ones get the GST folded into the item rates so the
+	  document books the bill's inclusive total.
+	* Late-bill warning: computed against TODAY, because a bill can sit in the
+	  queue for days after it was first read.
+	"""
+	if not _entity_books_gst(company):
+		_fold_gst_into_items(payload)
+	else:
+		# Registered entity, GST printed, but no account head was found to book it.
+		p = payload.get("projection") or {}
+		if (p.get("gst_total") or 0) > 0 and not payload.get("taxes") and not p.get("lines_tax_inclusive"):
+			payload.setdefault("notes", []).insert(0, _(
+				"⚠ This bill carries GST of {0}, but no GST account could be found in past "
+				"receipts — add it to the Taxes table yourself, or the document will total "
+				"less than the bill.").format(
+				frappe.format_value(p.get("gst_total"), {"fieldtype": "Currency"}))
+			)
+	_late_bill_note(payload)
 	return payload
+
+
+def _fold_gst_into_items(payload):
+	"""Fold the bill's GST (and round-off) into the item rates.
+
+	For an entity without GST registration the tax is genuinely part of the cost
+	— the pencil bought at 7.20 + 18% IS an 8.00 pencil (Chetan sir's own worked
+	example, M8). So instead of tax rows, each line's rate is grossed up
+	pro-rata by its share of the bill, and the items alone total the printed
+	grand total. Charge rows (supervision %, freight) are left alone — they are
+	usually untaxed — and any rounding residual lands on the largest line so the
+	total is exact.
+	"""
+	totals = payload.get("totals") or {}
+	proj = payload.get("projection") or {}
+	target = totals.get("grand_total") or proj.get("bill_grand")
+	items = payload.get("items") or []
+	base = [i for i in items if not i.get("is_charge") and (i.get("amount") or 0) > 0]
+
+	had_taxes = bool(payload.get("taxes"))
+	payload["taxes"] = []
+
+	if not target or not base:
+		return
+
+	items_total = round(sum(i.get("amount") or 0 for i in items), 2)
+	extra = round(float(target) - items_total, 2)
+	if abs(extra) < 0.005:
+		_reproject(payload, target)
+		return
+	# Nothing printed says the gap is tax; folding an unexplained gap into the
+	# rates would hide a misread. Only fold what the bill accounts for.
+	explained = round((proj.get("gst_total") or 0) + (proj.get("round_off") or 0), 2)
+	if not had_taxes and abs(extra - explained) > 1:
+		_reproject(payload, target)
+		return
+
+	def set_inclusive(item, amount):
+		qty = item.get("quantity") or 1
+		item["amount"] = round(amount, 2)
+		item["rate"] = round(amount / qty, 6) if qty else round(amount, 2)
+
+	snapshot = {id(i): i.get("amount") or 0 for i in base}
+	base_total = sum(snapshot.values())
+	largest = max(base, key=lambda i: snapshot[id(i)])
+	remaining = extra
+	for item in base:
+		if item is largest:
+			continue
+		share = round(extra * (snapshot[id(item)] / base_total), 2)
+		set_inclusive(item, snapshot[id(item)] + share)
+		remaining = round(remaining - share, 2)
+	set_inclusive(largest, snapshot[id(largest)] + remaining)
+
+	_reproject(payload, target)
+	payload["projection"]["gst_in_rates"] = True
+	payload.setdefault("notes", []).append(_(
+		"This company books GST-inclusive costs (no GST registration), so the bill's GST "
+		"of {0} was folded into the item rates instead of separate tax rows — the rows "
+		"book the printed total of {1}. The printed breakup stays above for checking."
+	).format(
+		frappe.format_value(proj.get("gst_total") or extra, {"fieldtype": "Currency"}),
+		frappe.format_value(target, {"fieldtype": "Currency"}),
+	))
+
+
+def _reproject(payload, target):
+	"""Recompute the tally projection after items changed and tax rows left."""
+	items = payload.get("items") or []
+	items_total = round(sum(i.get("amount") or 0 for i in items), 2)
+	proj = payload.setdefault("projection", {})
+	proj["items_total"] = items_total
+	proj["expected_grand"] = items_total
+	proj["round_off"] = 0
+	proj["lines_tax_inclusive"] = True  # the rows now carry the tax inside them
+	proj["tallies"] = target is not None and abs(items_total - float(target)) <= 1
+
+
+def _late_bill_note(payload):
+	"""Warn when the bill is dated outside the accepted window.
+
+	Decided in the 19 Aug review: the current and the previous month pass
+	(July's end-of-month purchases arrive as bills in August); anything older
+	must reach someone's attention — late bills also complicate TDS timing.
+	Configurable: `bench set-config bill_ocr_late_bill_months <n>` (default 1).
+	No email is sent — the warning shows here and the row stays visible for the
+	manager's dashboard. Computed at serve time, against today.
+	"""
+	from frappe.utils import add_months, get_first_day, getdate, nowdate
+
+	bill_date = (payload.get("fields") or {}).get("bill_date")
+	if not bill_date:
+		return
+	try:
+		d = getdate(bill_date)
+	except Exception:
+		return
+	today = getdate(nowdate())
+	months = cint(frappe.conf.get("bill_ocr_late_bill_months") or 1)
+	window_start = get_first_day(add_months(today, -months))
+	notes = payload.setdefault("notes", [])
+	if d < window_start:
+		notes.insert(0, _(
+			"⚠ This invoice is dated {0} — older than the current + previous month window. "
+			"Late bills need someone's attention (they also affect TDS timing): make sure "
+			"the right person knows before this is entered."
+		).format(frappe.format_value(str(d), {"fieldtype": "Date"})))
+	elif d > today:
+		notes.insert(0, _(
+			"⚠ This invoice is dated {0} — a FUTURE date. Check the date was read correctly."
+		).format(frappe.format_value(str(d), {"fieldtype": "Date"})))
 
 
 def _content_hash(file_url):
@@ -257,9 +433,12 @@ def _cached_payload(file_url):
 	if not frappe.db.exists("DocType", "Bill OCR Upload"):
 		return None
 
+	# "Receipt created" rows still hold a perfectly good reading — re-attaching
+	# that bill (e.g. on the matching Purchase Invoice) must stay free too.
+	done_statuses = ["in", ["Read", "Receipt created"]]
 	row = frappe.db.get_value(
 		"Bill OCR Upload",
-		{"bill_file": file_url, "status": "Read"},
+		{"bill_file": file_url, "status": done_statuses},
 		["name", "extraction_json"],
 		as_dict=True,
 	)
@@ -268,7 +447,7 @@ def _cached_payload(file_url):
 		if chash:
 			row = frappe.db.get_value(
 				"Bill OCR Upload",
-				{"content_hash": chash, "status": "Read"},
+				{"content_hash": chash, "status": done_statuses},
 				["name", "extraction_json"],
 				as_dict=True,
 			)
@@ -356,7 +535,10 @@ def _store_cache(file_url, payload):
 			doc.bill_file = file_url
 		fields = payload.get("fields") or {}
 		totals = payload.get("totals") or {}
-		doc.status = "Read"
+		# A row whose receipt already exists keeps that status — a re-read must
+		# not pull a processed bill back into the working list.
+		if doc.status != "Receipt created":
+			doc.status = "Read"
 		doc.error_message = ""
 		doc.vendor_name = (payload.get("vendor_name_on_bill") or "")[:140]
 		doc.supplier = fields.get("supplier")
@@ -420,7 +602,7 @@ def check_against_bill(doc, method=None):
 	try:
 		row = frappe.db.get_value(
 			"Bill OCR Upload",
-			{"bill_file": doc.custom_attachment, "status": "Read"},
+			{"bill_file": doc.custom_attachment, "status": ["in", ["Read", "Receipt created"]]},
 			["extraction_json"],
 		)
 		if not row:
@@ -442,6 +624,32 @@ def check_against_bill(doc, method=None):
 			)
 	except Exception:
 		frappe.log_error(title="Bill OCR — tally check failed", message=frappe.get_traceback())
+
+
+def mark_upload_processed(doc, method=None):
+	"""After a Purchase Receipt/Invoice with an attached bill is saved: move the
+	matching queue row to "Receipt created" and link the document.
+
+	This is what lets the queue list hide finished work — "जिसका processing पूरा
+	खत्म हो गया, वो नहीं देखूं" (19 Aug). A failure here must never block the save.
+	"""
+	if not doc.get("custom_attachment"):
+		return
+	try:
+		name = frappe.db.get_value("Bill OCR Upload", {"bill_file": doc.custom_attachment}, "name")
+		if not name:
+			chash = _content_hash(doc.custom_attachment)
+			if chash:
+				name = frappe.db.get_value("Bill OCR Upload", {"content_hash": chash}, "name")
+		if name:
+			frappe.db.set_value(
+				"Bill OCR Upload",
+				name,
+				{"status": "Receipt created", "created_document": f"{doc.doctype} {doc.name}"},
+				update_modified=False,
+			)
+	except Exception:
+		frappe.log_error(title="Bill OCR — mark processed failed", message=frappe.get_traceback())
 
 
 def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful=False):
@@ -509,7 +717,21 @@ def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful
 		notes.insert(
 			0,
 			_("⚠ Possible duplicate: {0} {1} already carries invoice no {2} for this supplier. "
-			  "Check before saving.").format(dup["doctype"], dup["name"], data.get("invoiceNumber")),
+			  "Check before saving — if this is genuinely a different bill, you can ignore "
+			  "this warning and continue.").format(dup["doctype"], dup["name"], data.get("invoiceNumber")),
+		)
+
+	# Same supplier, same day, a DIFFERENT bill number — the real case behind this
+	# (raised 19 Aug): the same vendor billed the same printing twice in one day,
+	# morning and evening, and it was only caught by a manual investigation. Cheap
+	# to surface here; the human decides whether it is genuine.
+	for dup in _same_day_bills(supplier["supplier"], data.get("invoiceDate"), data.get("invoiceNumber")):
+		notes.insert(
+			0,
+			_("⚠ {0} {1} is from the same supplier on the same date ({2}) under a different "
+			  "invoice number. Two bills from one vendor in one day can be the same purchase "
+			  "billed twice — compare the items before saving. Ignore this if both are genuine.").format(
+				dup["doctype"], dup["name"], data.get("invoiceDate")),
 		)
 
 	item_group = match.suggest_item_group(supplier["supplier"])
@@ -577,22 +799,10 @@ def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful
 					"description": _("Round off as printed on the bill"),
 					"tax_amount": roff,
 				})
-			notes.append(
-				_("GST of {0} entered into the Taxes table ({1}) so the document total matches "
-				  "the bill. Note: most existing receipts instead book GST inside the item "
-				  "values — confirm with accounts which way they want.").format(
-					frappe.format_value(
-						sum(a for _l, a in gst_rows if a), {"fieldtype": "Currency"}),
-					account_head,
-				)
-			)
-		elif any(a for _l, a in gst_rows):
-			notes.insert(0, _(
-				"⚠ This bill carries GST of {0}, but no GST account could be found in past "
-				"receipts — add it to the Taxes table yourself, or the document will total "
-				"less than the bill.").format(
-				frappe.format_value(sum(a for _l, a in gst_rows if a), {"fieldtype": "Currency"}))
-			)
+			# Which entities actually BOOK these rows is decided at serve time
+			# (_serve): unregistered ones get the GST folded into the rates
+			# instead, per the 19 Aug decision. The raw reading always carries
+			# the rows so the cache serves both kinds of entity.
 
 	# What will ERPNext total once these rows are in, and does that tally with the
 	# bill? Items carry the pre-tax amounts (or tax-inclusive ones, flagged); GST
@@ -607,6 +817,7 @@ def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful
 	inclusive = bool(data.get("linesTaxInclusive"))
 	expected = round(items_total + (0 if inclusive else gst_total) + round_off, 2)
 	tallies = bill_grand is not None and abs(expected - bill_grand) <= 1
+	pages = data.get("pageSummaries") or []
 	if bill_grand is not None and not tallies:
 		notes.insert(0, _(
 			"⚠ The rows below will total {0}{1}, but the bill prints {2} — a gap of {3}. "
@@ -618,6 +829,28 @@ def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful
 			frappe.format_value(bill_grand, {"fieldtype": "Currency"}),
 			frappe.format_value(abs(round((expected - bill_grand), 2)), {"fieldtype": "Currency"}),
 		))
+		# On a multi-page scan, say what each page held — "page 1 totals 6,300,
+		# page 2 totals 14,900, still short" is what lets a human realise the
+		# scan is missing a page (caught exactly this way in the 19 Aug demo).
+		if pages:
+			per_page = "; ".join(
+				_("page {0}: {1} line(s) totalling {2}").format(
+					p.get("page"),
+					p.get("lineCount") or "?",
+					frappe.format_value(p.get("itemsSubtotal"), {"fieldtype": "Currency"})
+					if p.get("itemsSubtotal") is not None else "?",
+				)
+				for p in pages
+			)
+			notes.insert(1, _(
+				"Read {0} page(s) — {1}. If the paper bill has more pages than were scanned "
+				"(check for a printed \"page X of Y\"{2}), a page is missing from the scan: "
+				"rescan the full bill and attach it again."
+			).format(
+				len(pages), per_page,
+				_(" — this bill prints “{0}”").format(data.get("pageCountPrinted"))
+				if data.get("pageCountPrinted") else "",
+			))
 
 	return {
 		"taxes": taxes,
@@ -629,6 +862,8 @@ def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful
 			"bill_grand": bill_grand,
 			"tallies": tallies,
 			"lines_tax_inclusive": inclusive,
+			"pages": pages,
+			"page_count_printed": data.get("pageCountPrinted"),
 		},
 		"fields": {
 			# Straight off the bill — these are the ones the user retypes today.
@@ -676,8 +911,8 @@ def read_upload(name):
 	doc = frappe.get_doc("Bill OCR Upload", name)
 	doc.check_permission("write")
 
-	if doc.status == "Read" and doc.extraction_json:
-		return {"name": doc.name, "status": "Read", "skipped": True}
+	if doc.status in ("Read", "Receipt created") and doc.extraction_json:
+		return {"name": doc.name, "status": doc.status, "skipped": True}
 
 	try:
 		payload = _cached_payload(doc.bill_file) or _run_extraction(

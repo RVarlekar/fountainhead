@@ -35,6 +35,23 @@ OTHER_CHARGE = {
 	"required": ["description", "amount"],
 }
 
+# Per-page accounting for multi-page bills. When a tally fails, "page 1 totals
+# 6,300, page 2 totals 14,900" is what lets a human spot that the scan is
+# missing a page — exactly how the missing middle page was caught live in the
+# 19 Aug review.
+PAGE_SUMMARY = {
+	"type": "object",
+	"properties": {
+		"page": {"type": "integer", "description": "1-based page number in the scan"},
+		"lineCount": {"type": "integer", "description": "How many item lines this page holds"},
+		"itemsSubtotal": {
+			"type": "number",
+			"description": "Sum of the line amounts printed on this page",
+		},
+	},
+	"required": ["page"],
+}
+
 INVOICE_SCHEMA = {
 	"type": "object",
 	"properties": {
@@ -69,6 +86,12 @@ INVOICE_SCHEMA = {
 		"roundOff": {"type": "number"},
 		"otherCharges": {"type": "array", "items": OTHER_CHARGE},
 		"totalInvoiceValue": {"type": "number"},
+		# Multi-page bookkeeping — lets the tally warning say what each page held.
+		"pageSummaries": {"type": "array", "items": PAGE_SUMMARY},
+		"pageCountPrinted": {
+			"type": "string",
+			"description": 'A printed "page X of Y" marker if the bill carries one, verbatim',
+		},
 		# Classification
 		"reverseChargeFlagged": {"type": "boolean"},
 		"expenseCategory": {"type": "string"},

@@ -160,12 +160,15 @@ doc_events = {
         "validate": "fountainhead.api.calculate_costing_total_in_workshop"
 	},
 	# Bill OCR: on save, warn (never block) when the document's grand total does
-	# not tally with what the attached bill printed.
+	# not tally with what the attached bill printed; after save, mark the queue
+	# row "Receipt created" so finished work drops out of the working list.
 	"Purchase Receipt": {
 		"validate": "fountainhead.bill_ocr.api.check_against_bill",
+		"on_update": "fountainhead.bill_ocr.api.mark_upload_processed",
 	},
 	"Purchase Invoice": {
 		"validate": "fountainhead.bill_ocr.api.check_against_bill",
+		"on_update": "fountainhead.bill_ocr.api.mark_upload_processed",
 	},
 }
 

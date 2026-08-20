@@ -34,4 +34,5 @@ Rules:
 - Always transcribe the round-off / rounding adjustment if the bill shows one, including its sign (a credit, "Cr", or "(-)" round-off is negative).
 - Leave any field you cannot see ABSENT. Never guess.
 - If the file contains more than one tax-invoice header, transcribe only the first.
+- MULTI-PAGE documents: also fill pageSummaries — for EACH page, its 1-based page number, how many item lines it holds, and the sum of the line amounts printed on that page. If the bill prints a "page X of Y" marker, copy it verbatim into pageCountPrinted. Single-page documents may omit both.
 """

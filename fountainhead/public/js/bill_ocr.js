@@ -25,7 +25,9 @@ fountainhead.bill_ocr = {
 
 		frappe.call({
 			method: "fountainhead.bill_ocr.api.extract_bill",
-			args: { file_url: frm.doc.custom_attachment, doctype: frm.doctype },
+			// company decides the GST treatment: registered entities get tax rows,
+			// unregistered ones get GST folded into the item rates (19 Aug decision).
+			args: { file_url: frm.doc.custom_attachment, doctype: frm.doctype, company: frm.doc.company },
 			freeze: true,
 			freeze_message: __("Reading the bill…"),
 			callback: (r) => {
@@ -353,25 +355,53 @@ fountainhead.bill_ocr = {
 		// Will the filled document tally with the bill? Shown FIRST, because a
 		// mismatch means something was misread and everything below it is suspect.
 		const p = result.projection || {};
+		// GST shown as a separate term only when it will actually book as tax rows —
+		// when it was folded into the rates (non-GST entity) the rows already carry it.
+		const show_gst = p.gst_total && !p.lines_tax_inclusive && !p.gst_in_rates;
+		const folded_note = p.gst_in_rates
+			? `<div class="small" style="margin-top:4px">${__(
+					"GST of {0} is included in the item rates — this company books GST-inclusive costs, no separate tax rows.",
+					[money(p.gst_total)]
+			  )}</div>`
+			: "";
+		// Per-page totals: on a failed tally of a multi-page scan, this is what
+		// exposes a missing page ("page 1 totals 6,300, page 2 totals 14,900…").
+		const pages_html =
+			!p.tallies && (p.pages || []).length
+				? `<div class="small" style="margin-top:6px"><b>${__("Per page")}:</b> ${p.pages
+						.map((pg) =>
+							__("page {0}: {1} line(s), {2}", [
+								pg.page,
+								pg.lineCount || "?",
+								pg.itemsSubtotal != null ? money(pg.itemsSubtotal) : "?",
+							])
+						)
+						.join(" · ")}${
+						p.page_count_printed
+							? ` — ${__("bill prints “{0}”", [frappe.utils.escape_html(p.page_count_printed)])}`
+							: ""
+				  }<br>${__("If the paper bill has more pages than were scanned, rescan the full bill and attach it again.")}</div>`
+				: "";
 		const tally_html =
 			p.bill_grand != null
 				? p.tallies
 					? `<div class="alert alert-success" style="margin-top:12px">
 							✓ ${__("Tallies: the rows will total {0}{1}{2} = {3}, and the bill prints {3}.", [
 								money(p.items_total),
-								p.gst_total && !p.lines_tax_inclusive ? " + GST " + money(p.gst_total) : "",
+								show_gst ? " + GST " + money(p.gst_total) : "",
 								p.round_off ? " " + (p.round_off > 0 ? "+" : "−") + " " + money(Math.abs(p.round_off)) : "",
 								money(p.bill_grand),
-							])}</div>`
+							])}${folded_note}</div>`
 					: `<div class="alert alert-danger" style="margin-top:12px">
 							<b>✗ ${__("Does not tally.")}</b>
 							${__("The rows will total {0}{1} = {2}, but the bill prints {3}.", [
 								money(p.items_total),
-								p.gst_total && !p.lines_tax_inclusive ? " + GST " + money(p.gst_total) : "",
+								show_gst ? " + GST " + money(p.gst_total) : "",
 								money(p.expected_grand),
 								money(p.bill_grand),
 							])}
 							${__("Something was misread or missed — say what, below, and it will be re-read.")}
+							${pages_html}
 						</div>`
 				: "";
 
@@ -538,7 +568,7 @@ fountainhead.bill_ocr = {
 			secondary_action: () => {
 				frappe.call({
 					method: "fountainhead.bill_ocr.api.reread_bill",
-					args: { file_url: frm.doc.custom_attachment, doctype: frm.doctype },
+					args: { file_url: frm.doc.custom_attachment, doctype: frm.doctype, company: frm.doc.company },
 					freeze: true,
 					freeze_message: __("Re-reading the bill carefully — every figure re-verified…"),
 					callback: (r) => {
@@ -671,6 +701,7 @@ fountainhead.bill_ocr = {
 					file_url: frm.doc.custom_attachment,
 					doctype: frm.doctype,
 					feedback: feedback,
+					company: frm.doc.company,
 				},
 				freeze: true,
 				freeze_message: __("Re-reading the bill with your correction…"),
