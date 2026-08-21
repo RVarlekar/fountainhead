@@ -167,7 +167,11 @@ doc_events = {
 		"on_update": "fountainhead.bill_ocr.api.mark_upload_processed",
 	},
 	"Purchase Invoice": {
-		"validate": "fountainhead.bill_ocr.api.check_against_bill",
+		# inherit first, so the tally check sees the attachment on the same save
+		"validate": [
+			"fountainhead.bill_ocr.api.inherit_bill_attachment",
+			"fountainhead.bill_ocr.api.check_against_bill",
+		],
 		"on_update": "fountainhead.bill_ocr.api.mark_upload_processed",
 	},
 }

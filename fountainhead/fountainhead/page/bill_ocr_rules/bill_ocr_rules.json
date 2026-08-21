@@ -1,0 +1,23 @@
+{
+ "creation": "2026-08-21 12:00:00.000000",
+ "doctype": "Page",
+ "icon": "file-text",
+ "idx": 0,
+ "modified": "2026-08-21 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Fountainhead",
+ "name": "bill-ocr-rules",
+ "owner": "Administrator",
+ "page_name": "bill-ocr-rules",
+ "roles": [
+  {"role": "System Manager"},
+  {"role": "Purchase User"},
+  {"role": "Purchase Manager"},
+  {"role": "Accounts User"},
+  {"role": "Accounts Manager"},
+  {"role": "Auditor"}
+ ],
+ "standard": "Yes",
+ "system_page": 0,
+ "title": "Bill OCR — How it works"
+}

@@ -723,7 +723,18 @@ fountainhead.bill_ocr = {
 // onload_post_render covers forms that ARRIVE with an attachment already set —
 // the batch queue's "Create Purchase Receipt" button routes here with the file
 // in route_options, which does not fire the field-change trigger.
+// "View bill" — the original scan, one click from the document (and therefore
+// one click from its ledger entries: GL → voucher → here). The Invoice inherits
+// the Receipt's attachment server-side, so the trail survives PR → PI.
+function bill_ocr_view_button(frm) {
+	if (!frm.doc.custom_attachment || frm.is_new()) return;
+	frm.add_custom_button(__("📄 View bill"), () => {
+		window.open(frm.doc.custom_attachment, "_blank", "noopener");
+	});
+}
+
 frappe.ui.form.on("Purchase Receipt", {
+	refresh: bill_ocr_view_button,
 	custom_attachment(frm) {
 		fountainhead.bill_ocr.run(frm);
 	},
@@ -733,6 +744,7 @@ frappe.ui.form.on("Purchase Receipt", {
 });
 
 frappe.ui.form.on("Purchase Invoice", {
+	refresh: bill_ocr_view_button,
 	custom_attachment(frm) {
 		fountainhead.bill_ocr.run(frm);
 	},

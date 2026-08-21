@@ -671,6 +671,119 @@ def check_against_bill(doc, method=None):
 		frappe.log_error(title="Bill OCR — tally check failed", message=frappe.get_traceback())
 
 
+def inherit_bill_attachment(doc, method=None):
+	"""Purchase Invoice created from a Purchase Receipt: carry the bill scan over.
+
+	Today the attachment lives on the Receipt and vanishes from view once the
+	Invoice is made (a standing complaint, 19 Aug — there is even an open vendor
+	ticket for it). Copying it forward means the original bill stays reachable
+	from the ledger entry: GL → Invoice → the scan. Never overwrites an
+	attachment someone set by hand.
+	"""
+	if doc.doctype != "Purchase Invoice" or doc.get("custom_attachment"):
+		return
+	try:
+		for item in doc.get("items") or []:
+			pr = item.get("purchase_receipt")
+			if not pr:
+				continue
+			attachment = frappe.db.get_value("Purchase Receipt", pr, "custom_attachment")
+			if attachment:
+				doc.custom_attachment = attachment
+				break
+	except Exception:
+		frappe.log_error(title="Bill OCR — attachment inherit failed", message=frappe.get_traceback())
+
+
+@frappe.whitelist()
+def get_rules():
+	"""The rulebook, rendered read-only — 'how does this work' for an auditor.
+
+	The content ships as a markdown file INSIDE the app, so the page can only
+	change through a code deployment — exactly the requirement from the 19 Aug
+	review: visible to an accountant/CA in ERPNext, editable only via
+	development, never on screen.
+	"""
+	import os
+
+	path = os.path.join(os.path.dirname(__file__), "RULES.md")
+	with open(path, encoding="utf-8") as f:
+		text = f.read()
+	return {"html": frappe.utils.md_to_html(text)}
+
+
+@frappe.whitelist()
+def dashboard_stats():
+	"""Numbers for the manager dashboard (19 Aug ask): how many bills uploaded,
+	deleted, late — and what the reading cost NEXT TO the time it saved, so the
+	₹2-a-bill number is always seen beside the 3–5 minutes of typing it replaces.
+	"""
+	import json
+	from frappe.utils import add_months, get_first_day, getdate, nowdate
+
+	frappe.only_for(("System Manager", "Purchase Manager", "Accounts Manager", "Purchase User", "Accounts User"))
+
+	today = getdate(nowdate())
+	month_start = get_first_day(today)
+	months = cint(frappe.conf.get("bill_ocr_late_bill_months") or 1)
+	window_start = get_first_day(add_months(today, -months))
+
+	by_status = dict(frappe.db.sql("select status, count(*) from `tabBill OCR Upload` group by status"))
+	uploads_this_month = frappe.db.count("Bill OCR Upload", {"creation": [">=", str(month_start)]})
+	deleted = frappe.db.count("Deleted Document", {"deleted_doctype": "Bill OCR Upload"})
+	late_pending = frappe.db.count("Bill OCR Upload", {
+		"status": ["in", ["Pending", "Read", "Error"]],
+		"bill_date": ["<", str(window_start)],
+	})
+	per_user = frappe.db.sql(
+		"select owner, count(*) n from `tabBill OCR Upload` group by owner order by n desc limit 8"
+	)
+	errors = frappe.get_all(
+		"Bill OCR Upload", filters={"status": "Error"},
+		fields=["name", "vendor_name", "error_message"], order_by="modified desc", limit_page_length=5,
+	)
+
+	# Cost, from the token usage stored with every reading. Intro pricing $2/$10
+	# per MTok until 31 Aug 2026, then $3/$15 — overridable from site config.
+	intro = str(today) <= "2026-08-31"
+	rate_in = float(frappe.conf.get("bill_ocr_rate_in_usd") or (2 if intro else 3))
+	rate_out = float(frappe.conf.get("bill_ocr_rate_out_usd") or (10 if intro else 15))
+	usd_inr = float(frappe.conf.get("bill_ocr_usd_inr") or 88)
+	tokens_in = tokens_out = reads = 0
+	for (blob,) in frappe.db.sql(
+		"select extraction_json from `tabBill OCR Upload` where ifnull(extraction_json,'') != ''"
+	):
+		try:
+			usage = (json.loads(blob) or {}).get("usage") or {}
+			tokens_in += usage.get("input_tokens") or 0
+			tokens_out += usage.get("output_tokens") or 0
+			reads += 1
+		except ValueError:
+			continue
+	cost_inr = round((tokens_in * rate_in + tokens_out * rate_out) / 1e6 * usd_inr, 2)
+
+	# The other side of the ledger: each read replaces 3–5 minutes of typing
+	# (accounts' own estimate, M8) at roughly ₹200/hour.
+	minutes_saved = reads * 4
+	value_saved = round(minutes_saved / 60 * 200, 0)
+
+	return {
+		"by_status": by_status,
+		"total": sum(by_status.values()),
+		"uploads_this_month": uploads_this_month,
+		"deleted": deleted,
+		"late_pending": late_pending,
+		"per_user": [{"user": u, "count": n} for u, n in per_user],
+		"errors": errors,
+		"reads": reads,
+		"cost_inr": cost_inr,
+		"cost_per_read": round(cost_inr / reads, 2) if reads else 0,
+		"minutes_saved": minutes_saved,
+		"value_saved_inr": value_saved,
+		"window_start": str(window_start),
+	}
+
+
 def mark_upload_processed(doc, method=None):
 	"""After a Purchase Receipt/Invoice with an attached bill is saved: move the
 	matching queue row to "Receipt created" and link the document.
@@ -697,7 +810,7 @@ def mark_upload_processed(doc, method=None):
 		frappe.log_error(title="Bill OCR — mark processed failed", message=frappe.get_traceback())
 
 
-def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful=False):
+def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful=False, challan_url=None):
 	if doctype not in SUPPORTED_DOCTYPES:
 		frappe.throw(_("Bill OCR does not handle {0}.").format(doctype))
 
@@ -706,9 +819,30 @@ def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful
 		raise frappe.PermissionError(_("You are not allowed to create {0}.").format(doctype))
 
 	file_bytes, mime = _load_attachment(file_url)
+	# The delivery challan, read together with the bill: lump-sum bills ("printing
+	# — ₹X") carry their real line detail on the challan (19 Aug ask).
+	challan = _load_attachment(challan_url) if challan_url else None
 
-	raw, usage = extract.read_bill(file_bytes, mime, feedback=feedback, careful=careful)
+	raw, usage = extract.read_bill(file_bytes, mime, feedback=feedback, careful=careful, challan=challan)
 	data, notes = normalize.normalize(raw)
+	if challan:
+		notes.append(_(
+			"A challan was read together with the bill — line detail may come from it; "
+			"all money figures are from the bill itself."
+		))
+
+	# The paper signature IS the approval in this process — the on-screen approval
+	# step was removed on that basis (19 Aug). So an upload with no school-side
+	# mark at all deserves a loud question. Warn-only: detection was spiked on the
+	# real bills (marks, stamp text, even an unsigned vendor box all reported
+	# correctly), but a false alarm here costs one glance, never a block.
+	marks = raw.get("approvalMarks") or {}
+	if marks and not marks.get("buyerApprovalPresent"):
+		notes.insert(0, _(
+			"⚠ No approval signature or stamp from the school side is visible on this "
+			"bill. Bills are signed before entry — check it was approved (the mark may "
+			"be on another page) before saving."
+		))
 
 	# Charges outside the line items — supervision %, freight, handling. These are
 	# part of the printed grand total, so they MUST become rows too: dropping them
@@ -933,6 +1067,7 @@ def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful
 		},
 		"vendor_name_on_bill": data.get("vendorName"),
 		"vendor_name_english": data.get("vendorNameEn"),
+		"approval_marks": marks,
 		"can_create_item": bool(frappe.has_permission("Item", "create")),
 		"can_create_supplier": bool(frappe.has_permission("Supplier", "create")),
 		"notes": notes,
@@ -961,7 +1096,9 @@ def read_upload(name):
 
 	try:
 		payload = _cached_payload(doc.bill_file) or _run_extraction(
-			doc.bill_file, doc.target_doctype or "Purchase Receipt"
+			doc.bill_file,
+			doc.target_doctype or "Purchase Receipt",
+			challan_url=doc.get("challan_file"),
 		)
 	except Exception as e:
 		doc.status = "Error"

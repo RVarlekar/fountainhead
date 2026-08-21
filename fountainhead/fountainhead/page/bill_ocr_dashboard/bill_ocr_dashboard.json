@@ -1,0 +1,22 @@
+{
+ "creation": "2026-08-21 12:00:00.000000",
+ "doctype": "Page",
+ "icon": "dashboard",
+ "idx": 0,
+ "modified": "2026-08-21 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Fountainhead",
+ "name": "bill-ocr-dashboard",
+ "owner": "Administrator",
+ "page_name": "bill-ocr-dashboard",
+ "roles": [
+  {"role": "System Manager"},
+  {"role": "Purchase Manager"},
+  {"role": "Accounts Manager"},
+  {"role": "Purchase User"},
+  {"role": "Accounts User"}
+ ],
+ "standard": "Yes",
+ "system_page": 0,
+ "title": "Bill OCR — Dashboard"
+}

@@ -86,6 +86,34 @@ INVOICE_SCHEMA = {
 		"roundOff": {"type": "number"},
 		"otherCharges": {"type": "array", "items": OTHER_CHARGE},
 		"totalInvoiceValue": {"type": "number"},
+		# Approval marks — the paper signature IS the approval in this process
+		# (the on-screen approval step was removed on that basis, 19 Aug). Bills
+		# must be signed before scanning; an unsigned upload gets a warning.
+		# Feasibility spiked on the 6 real bills first: stamp text, signature
+		# counts and even an unsigned vendor box were all reported correctly.
+		"approvalMarks": {
+			"type": "object",
+			"properties": {
+				"handwrittenSignatures": {
+					"type": "integer",
+					"description": "Distinct handwritten signatures/initials (not notes, amounts or reference numbers)",
+				},
+				"stamps": {
+					"type": "array",
+					"items": {"type": "string"},
+					"description": "Each rubber stamp visible, by its text",
+				},
+				"buyerApprovalPresent": {
+					"type": "boolean",
+					"description": "Any buyer-side approval mark — a signature or stamp from the receiving school/company",
+				},
+				"vendorSignaturePresent": {
+					"type": "boolean",
+					"description": "Is the vendor's own authorised-signatory space actually signed?",
+				},
+			},
+			"required": ["handwrittenSignatures", "stamps", "buyerApprovalPresent"],
+		},
 		# Multi-page bookkeeping — lets the tally warning say what each page held.
 		"pageSummaries": {"type": "array", "items": PAGE_SUMMARY},
 		"pageCountPrinted": {
