@@ -35,4 +35,14 @@ Rules:
 - Leave any field you cannot see ABSENT. Never guess.
 - If the file contains more than one tax-invoice header, transcribe only the first.
 - MULTI-PAGE documents: also fill pageSummaries — for EACH page, its 1-based page number, how many item lines it holds, and the sum of the line amounts printed on that page. If the bill prints a "page X of Y" marker, copy it verbatim into pageCountPrinted. Single-page documents may omit both.
+- APPROVAL MARKS: fill approvalMarks — count the distinct handwritten signatures/initials (ink scribbles that are signatures, NOT handwritten notes, amounts or reference numbers), list each rubber stamp by its text, and say whether the BUYER side has approved (any signature or stamp from the receiving school/company) and whether the vendor's own authorised-signatory space is signed. Be strict: only report what is clearly visible.
 """
+
+CHALLAN_NOTE = (
+	"\n\nThe SECOND document attached is the DELIVERY CHALLAN for the same purchase. "
+	"Use it only for line-level detail: when the bill prints a lump sum (e.g. one "
+	"'printing' line), take the individual lines from the challan instead — but ALL "
+	"money figures (taxable value, GST, grand total) still come from the BILL, and "
+	"the challan's lines must add up to the bill's lump sum. Note in your reading "
+	"which lines came from the challan."
+)

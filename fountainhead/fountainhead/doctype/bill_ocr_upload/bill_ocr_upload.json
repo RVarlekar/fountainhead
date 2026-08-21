@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "bill_file",
+  "challan_file",
   "target_doctype",
   "column_break_main",
   "status",
@@ -31,6 +32,12 @@
    "in_list_view": 1,
    "label": "Bill (photo or PDF)",
    "reqd": 1
+  },
+  {
+   "description": "Optional. When the bill prints a lump sum (e.g. one \"printing\" line), attach the delivery challan too — the line detail is read from it, while every amount still comes from the bill. Attach it BEFORE pressing Read.",
+   "fieldname": "challan_file",
+   "fieldtype": "Attach",
+   "label": "Challan / delivery note (optional)"
   },
   {
    "default": "Purchase Receipt",
@@ -144,7 +151,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-08-19 21:00:00.000000",
+ "modified": "2026-08-21 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Fountainhead",
  "name": "Bill OCR Upload",

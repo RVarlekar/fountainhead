@@ -15,7 +15,7 @@ import base64
 import frappe
 import requests
 
-from fountainhead.bill_ocr.prompt import SYSTEM_PROMPT, USER_PROMPT
+from fountainhead.bill_ocr.prompt import CHALLAN_NOTE, SYSTEM_PROMPT, USER_PROMPT
 from fountainhead.bill_ocr.schema import TOOL
 
 API_URL = "https://api.anthropic.com/v1/messages"
@@ -60,8 +60,12 @@ CAREFUL_SUFFIX = (
 )
 
 
-def read_bill(file_bytes, mime_type, feedback=None, careful=False):
+def read_bill(file_bytes, mime_type, feedback=None, careful=False, challan=None):
 	"""Send the bill to Claude and return the raw extracted dict.
+
+	`challan` is an optional (bytes, mime_type) tuple — the delivery challan for
+	the same purchase, read together with the bill so lump-sum bills get their
+	line detail from it while every money figure still comes from the bill.
 
 	Forces the `emit_invoice` tool so the reply is structured JSON, never prose.
 	Thinking is disabled: this is transcription, and adaptive thinking spends
@@ -85,6 +89,13 @@ def read_bill(file_bytes, mime_type, feedback=None, careful=False):
 			f"Bill OCR accepts up to {MAX_BYTES // 1024 // 1024} MB."
 		)
 
+	content = [_content_block(file_bytes, mime_type)]
+	if challan:
+		challan_bytes, challan_mime = challan
+		if len(challan_bytes) > MAX_BYTES:
+			frappe.throw("The challan file is too large — keep it under 20 MB.")
+		content.append(_content_block(challan_bytes, challan_mime))
+
 	payload = {
 		"model": frappe.conf.get("bill_ocr_model") or DEFAULT_MODEL,
 		"max_tokens": frappe.conf.get("bill_ocr_max_tokens") or DEFAULT_MAX_TOKENS,
@@ -95,11 +106,12 @@ def read_bill(file_bytes, mime_type, feedback=None, careful=False):
 		"messages": [
 			{
 				"role": "user",
-				"content": [
-					_content_block(file_bytes, mime_type),
+				"content": content
+				+ [
 					{
 						"type": "text",
 						"text": USER_PROMPT
+						+ (CHALLAN_NOTE if challan else "")
 						+ (CAREFUL_SUFFIX if careful else "")
 						+ (
 							"\n\nIMPORTANT — a human reviewer looked at your previous reading of this "
