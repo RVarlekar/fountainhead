@@ -1,0 +1,171 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"bocr_head\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Bill OCR</b></span>\",\"col\":12}},{\"id\":\"bocr_intro\",\"type\":\"paragraph\",\"data\":{\"text\":\"Attach a bill scan and the entry fills itself. Nothing posts automatically — a person always reviews and saves.\",\"col\":12}},{\"id\":\"bocr_sc_head\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h5\\\">Start here</span>\",\"col\":12}},{\"id\":\"bocr_sc1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bill OCR Upload\",\"col\":3}},{\"id\":\"bocr_sc2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Dashboard\",\"col\":3}},{\"id\":\"bocr_sc3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"How it works\",\"col\":3}},{\"id\":\"bocr_sc4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Purchase Receipt\",\"col\":3}},{\"id\":\"bocr_sp\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"bocr_card1\",\"type\":\"card\",\"data\":{\"card_name\":\"Bills\",\"col\":4}},{\"id\":\"bocr_card2\",\"type\":\"card\",\"data\":{\"card_name\":\"Learning & Masters\",\"col\":4}},{\"id\":\"bocr_card3\",\"type\":\"card\",\"data\":{\"card_name\":\"Oversight\",\"col\":4}}]",
+ "creation": "2026-08-21 16:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "file-text",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "Bill OCR",
+ "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Bills",
+   "link_count": 0,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Bill OCR Upload (batch queue)",
+   "link_count": 0,
+   "link_to": "Bill OCR Upload",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Purchase Receipt",
+   "link_count": 0,
+   "link_to": "Purchase Receipt",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Purchase Invoice",
+   "link_count": 0,
+   "link_to": "Purchase Invoice",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Learning & Masters",
+   "link_count": 0,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Learned item choices (Bill OCR Item Map)",
+   "link_count": 0,
+   "link_to": "Bill OCR Item Map",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Items",
+   "link_count": 0,
+   "link_to": "Item",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Suppliers",
+   "link_count": 0,
+   "link_to": "Supplier",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Oversight",
+   "link_count": 0,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Manager Dashboard",
+   "link_count": 0,
+   "link_to": "bill-ocr-dashboard",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "How it works (rules, read-only)",
+   "link_count": 0,
+   "link_to": "bill-ocr-rules",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Items created from bills (weekly review)",
+   "link_count": 0,
+   "link_to": "Item",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-08-21 16:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Fountainhead",
+ "name": "Bill OCR",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 99.0,
+ "shortcuts": [
+  {
+   "color": "Orange",
+   "doc_view": "List",
+   "label": "Bill OCR Upload",
+   "link_to": "Bill OCR Upload",
+   "stats_filter": "{\"status\": \"Pending\"}",
+   "type": "DocType"
+  },
+  {
+   "color": "Blue",
+   "label": "Dashboard",
+   "link_to": "bill-ocr-dashboard",
+   "type": "Page"
+  },
+  {
+   "color": "Grey",
+   "label": "How it works",
+   "link_to": "bill-ocr-rules",
+   "type": "Page"
+  },
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "label": "Purchase Receipt",
+   "link_to": "Purchase Receipt",
+   "type": "DocType"
+  }
+ ],
+ "title": "Bill OCR"
+}
