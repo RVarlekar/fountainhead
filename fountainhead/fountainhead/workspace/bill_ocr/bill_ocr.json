@@ -118,16 +118,26 @@
   },
   {
    "hidden": 0,
-   "is_query_report": 0,
+   "is_query_report": 1,
    "label": "Items created from bills (weekly review)",
    "link_count": 0,
-   "link_to": "Item",
-   "link_type": "DocType",
+   "link_to": "Bill OCR Items - Weekly Review",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "GL Entry by Document Date",
+   "link_count": 0,
+   "link_to": "GL Entry by Document Date",
+   "link_type": "Report",
    "onboard": 0,
    "type": "Link"
   }
  ],
- "modified": "2026-08-21 16:00:00.000000",
+ "modified": "2026-08-25 12:30:00.000000",
  "modified_by": "Administrator",
  "module": "Fountainhead",
  "name": "Bill OCR",

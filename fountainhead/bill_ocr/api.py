@@ -633,6 +633,25 @@ def remember_item_choice(description, item_code, description_en=None):
 	return {"learned": saved}
 
 
+@frappe.whitelist()
+def next_cash_memo_number():
+	"""Issue the next Cash Memo number, atomically.
+
+	For small local vendors who give no bill, a Cash Memo is created and its
+	running number was typed BY HAND (it had reached 145 — with a report lookup
+	needed before every entry to avoid duplicates). This draws CM-#### from a
+	proper naming series instead: one counter, atomic, so two people entering at
+	the same moment can never get the same number. The series is seeded safely
+	above the old manual counter on migrate.
+	"""
+	if not (frappe.has_permission("Purchase Receipt", "create")
+			or frappe.has_permission("Purchase Invoice", "create")):
+		raise frappe.PermissionError(_("You are not allowed to create purchase documents."))
+	from frappe.model.naming import make_autoname
+
+	return {"number": make_autoname("CM-.####")}
+
+
 def check_against_bill(doc, method=None):
 	"""On save of a Purchase Receipt/Invoice with an attached bill: does the
 	document's grand total tally with what the bill printed?

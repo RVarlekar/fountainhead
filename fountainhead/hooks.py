@@ -52,8 +52,9 @@ doctype_js = {
 	"Project": "public/js/project.js",
 	# Bill OCR — fires on the custom_attachment field to pre-fill the form.
 	# It only ever fills fields in the browser; it never saves or submits.
-	"Purchase Receipt": "public/js/bill_ocr.js",
-	"Purchase Invoice": "public/js/bill_ocr.js",
+	# cash_memo.js adds the one-click Cash Memo number button.
+	"Purchase Receipt": ["public/js/bill_ocr.js", "public/js/cash_memo.js"],
+	"Purchase Invoice": ["public/js/bill_ocr.js", "public/js/cash_memo.js"],
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
