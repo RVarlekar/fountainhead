@@ -71,4 +71,15 @@ BILL_OCR_FIELDS = {
 
 def after_migrate():
 	create_custom_fields(BILL_OCR_FIELDS, update=True)
+	_seed_cash_memo_series()
 	frappe.db.commit()
+
+
+def _seed_cash_memo_series():
+	"""Start the CM-#### Cash Memo series safely above the old hand-typed
+	counter (it had reached 145). Idempotent: never lowers an existing counter."""
+	current = frappe.db.sql("select current from tabSeries where name = 'CM-'")
+	if not current:
+		frappe.db.sql("insert into tabSeries (name, current) values ('CM-', 200)")
+	elif (current[0][0] or 0) < 200:
+		frappe.db.sql("update tabSeries set current = 200 where name = 'CM-'")
