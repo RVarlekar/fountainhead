@@ -39,7 +39,94 @@ def _find_duplicates(supplier, bill_no):
 			limit_page_length=3,
 		):
 			found.append({"doctype": doctype, "name": name})
+	# Imprest-type bills are booked through a Journal Entry, not a purchase
+	# document (Chetan sir, 26 Aug) — the JE carries the bill number in its
+	# reference (cheque_no). A xerox entered as a PR/PI after the original went
+	# through a JV (or vice versa) must still collide.
+	for name in _je_with_reference(supplier, bill_no):
+		found.append({"doctype": "Journal Entry", "name": name})
 	return found
+
+
+def _je_with_reference(supplier, reference, exclude=None):
+	"""Journal Entries whose reference (cheque_no) carries this bill number for
+	this supplier. Cancelled ones don't count."""
+	if not supplier or not reference:
+		return []
+	rows = frappe.db.sql(
+		"""
+		select distinct je.name
+		from `tabJournal Entry` je
+		join `tabJournal Entry Account` jea on jea.parent = je.name
+		where je.docstatus < 2 and je.cheque_no = %(ref)s
+		  and jea.party_type = 'Supplier' and jea.party = %(supplier)s
+		  and je.name != %(exclude)s
+		limit 3
+		""",
+		{"ref": reference, "supplier": supplier, "exclude": exclude or ""},
+	)
+	return [r[0] for r in rows]
+
+
+def check_purchase_against_je(doc, method=None):
+	"""On save of a Purchase Receipt/Invoice: has this supplier + bill number
+	already been booked through a Journal Entry (the imprest route)?
+
+	A WARNING, never a block — same discipline as every other duplicate check.
+	"""
+	try:
+		if not doc.get("supplier") or not doc.get("bill_no"):
+			return
+		for je in _je_with_reference(doc.supplier, doc.bill_no):
+			frappe.msgprint(
+				_("⚠ Journal Entry {0} already carries reference no {1} for this supplier — "
+				  "this bill may already be booked through a JV (imprest route). Check the "
+				  "ledger before saving; ignore this if both entries are genuine.").format(
+					je, doc.bill_no),
+				indicator="orange",
+				title=_("Possibly already booked via JV"),
+			)
+	except Exception:
+		frappe.log_error(title="Bill OCR — JV duplicate check failed", message=frappe.get_traceback())
+
+
+def check_je_duplicates(doc, method=None):
+	"""On save of a Journal Entry with a supplier party and a reference number:
+	warn when that supplier + reference already exists — as a Purchase document's
+	bill number, OR as another Journal Entry's reference.
+
+	This is Chetan sir's explicit 26 Aug ask: whichever route the second entry
+	takes (JV or invoice), the person entering must be told "this bill is already
+	booked" at entry time. Warning only, never a block.
+	"""
+	try:
+		ref = (doc.get("cheque_no") or "").strip()
+		if not ref:
+			return
+		suppliers = {a.party for a in (doc.get("accounts") or [])
+		             if a.get("party_type") == "Supplier" and a.get("party")}
+		for supplier in suppliers:
+			for doctype in SUPPORTED_DOCTYPES:
+				for name in frappe.get_all(
+					doctype,
+					filters={"supplier": supplier, "bill_no": ref, "docstatus": ["<", 2]},
+					pluck="name", limit_page_length=3,
+				):
+					frappe.msgprint(
+						_("⚠ {0} {1} already carries bill no {2} for {3} — this bill may "
+						  "already be booked. Check before saving; ignore if both are genuine.")
+						.format(_(doctype), name, ref, supplier),
+						indicator="orange", title=_("Possibly already booked"),
+					)
+			for name in _je_with_reference(supplier, ref, exclude=doc.name):
+				frappe.msgprint(
+					_("⚠ Journal Entry {0} already carries reference no {1} for {2} — "
+					  "possible double booking through JV. Check before saving.").format(
+						name, ref, supplier),
+					indicator="orange", title=_("Possibly already booked"),
+				)
+	except Exception:
+		frappe.log_error(title="Bill OCR — JE duplicate check failed", message=frappe.get_traceback())
 
 
 def _same_day_bills(supplier, bill_date, bill_no):
@@ -196,7 +283,7 @@ def get_creation_defaults(item_group=None, unit=None):
 
 
 @frappe.whitelist()
-def extract_bill(file_url, doctype="Purchase Receipt", company=None):
+def extract_bill(file_url, doctype="Purchase Receipt", company=None, gst_credit=None):
 	"""Read an attached bill and return values for the form to fill in.
 
 	Args:
@@ -217,10 +304,10 @@ def extract_bill(file_url, doctype="Purchase Receipt", company=None):
 	"""
 	cached = _cached_payload(file_url)
 	if cached is not None:
-		return _serve(cached, company)
+		return _serve(cached, company, gst_credit=gst_credit)
 	payload = _run_extraction(file_url, doctype)
 	_store_cache(file_url, payload)
-	return _serve(payload, company)
+	return _serve(payload, company, gst_credit=gst_credit)
 
 
 @frappe.whitelist()
@@ -287,18 +374,22 @@ def _entity_books_gst(company=None):
 	return bool(cint(frappe.db.get_value("Company", company, "custom_gst_registered") or 0))
 
 
-def _serve(payload, company=None):
+def _serve(payload, company=None, gst_credit=None):
 	"""Company- and time-dependent adjustments, applied every time a reading is
 	served — fresh or cached — so the cache stays raw and reusable.
 
 	* GST treatment (per _entity_books_gst): registered entities keep the tax
 	  rows; unregistered ones get the GST folded into the item rates so the
 	  document books the bill's inclusive total.
+	* gst_credit (registered entities only, per the 1 Sept RCM/GST rules): the
+	  booking-time checkbox. Unticked (0) = this bill's GST is NOT claimable →
+	  fold it into the rates exactly like a non-registered entity; ticked/unset
+	  = keep the tax rows.
 	* Late-bill warning: computed against TODAY, because a bill can sit in the
 	  queue for days after it was first read.
 	"""
-	if not _entity_books_gst(company):
-		_book_gst_as_cost(payload, company)
+	if not _entity_books_gst(company) or (gst_credit is not None and not cint(gst_credit)):
+		_fold_gst_into_rates(payload)
 	else:
 		# Registered entity, GST printed, but no account head was found to book it.
 		p = payload.get("projection") or {}
@@ -309,8 +400,120 @@ def _serve(payload, company=None):
 				"less than the bill.").format(
 				frappe.format_value(p.get("gst_total"), {"fieldtype": "Currency"}))
 			)
+	_refresh_new_item_candidates(payload)
+	_set_narration(payload)
 	_late_bill_note(payload)
+	payload["academic_year"] = _active_academic_year()
 	return payload
+
+
+def _active_academic_year():
+	"""The FHS Academic Year the current date falls in — the accounting dimension
+	department bills must land under (Chetan sir, 26 Aug: bills were still going
+	into the old 25-26 bucket because nobody re-pointed the default). Best-effort:
+	a date-ranged record wins; otherwise the newest by name; None when the
+	dimension doctype doesn't exist on this site.
+	"""
+	try:
+		if not frappe.db.exists("DocType", "FHS Academic Year"):
+			return None
+		meta = frappe.get_meta("FHS Academic Year")
+		today = frappe.utils.nowdate()
+		date_fields = [f for f in ("from_date", "start_date", "year_start_date") if meta.has_field(f)]
+		if date_fields:
+			start = date_fields[0]
+			end = {"from_date": "to_date", "start_date": "end_date",
+			       "year_start_date": "year_end_date"}[start]
+			if meta.has_field(end):
+				row = frappe.db.get_value(
+					"FHS Academic Year",
+					{start: ["<=", today], end: [">=", today]},
+					"name",
+				)
+				if row:
+					return row
+		rows = frappe.get_all("FHS Academic Year", order_by="name desc", limit_page_length=1, pluck="name")
+		return rows[0] if rows else None
+	except Exception:
+		return None
+
+
+def _refresh_new_item_candidates(payload):
+	"""Items created MID-BATCH must appear as suggestions on the bills that follow.
+
+	Raised at Chetan sir's desk (26 Aug): he created "Grade 1 Hindi book" from one
+	bill, and the next bill's identical line offered nothing — its candidate list
+	was frozen at read time, before the item existed. So at serve time, lines with
+	no match are re-scored against the items THIS FEATURE created recently — a set
+	small enough (flagged `custom_created_from_bill_ocr`) to scan on every serve.
+	"""
+	lines = [i for i in (payload.get("items") or []) if not i.get("item_code")]
+	if not lines:
+		return
+	try:
+		fresh = frappe.get_all(
+			"Item",
+			filters={"custom_created_from_bill_ocr": 1, "disabled": 0,
+			         "creation": [">", frappe.utils.add_days(frappe.utils.nowdate(), -30)]},
+			fields=["name", "item_name"],
+			limit_page_length=300,
+		)
+	except Exception:
+		return
+	if not fresh:
+		return
+	fresh_tokens = [(f, match.tokens(f.item_name or f.name)) for f in fresh]
+	for line in lines:
+		known = {c.get("item_code") for c in (line.get("candidates") or [])}
+		text_tokens = match.tokens(line.get("description_en") or line.get("description"))
+		best = None
+		for f, ftok in fresh_tokens:
+			if f.name in known:
+				continue
+			score = match.token_score(text_tokens, ftok)
+			if score >= match.ITEM_SUGGEST and (best is None or score > best[1]):
+				best = (f, score)
+		if best:
+			(line.setdefault("candidates", [])).insert(0, {
+				"item_code": best[0].name,
+				"item_name": best[0].item_name or best[0].name,
+				"score": round(best[1], 1),
+				"seen_before": False,
+				"times_used": 0,
+				"basis": "new",
+			})
+
+
+def _set_narration(payload):
+	"""Build the voucher narration in the accounts team's own convention.
+
+	Format per Tejas bhai's samples (mail, 1 Sept): party name — Bill No. X:
+	what was bought/done. "Details as per the attached bill." Always editable on
+	the form — the narration is theirs; this only saves the typing.
+	"""
+	fields = payload.get("fields") or {}
+	party = fields.get("supplier") or payload.get("vendor_name_english") or payload.get("vendor_name_on_bill")
+	bill_no = fields.get("bill_no")
+	if not party:
+		return
+	items = payload.get("items") or []
+	descs = []
+	for i in items:
+		d = (i.get("description_en") or i.get("description") or "").strip()
+		if d:
+			descs.append(d if len(d) <= 60 else d[:57] + "…")
+		if len(descs) == 3:
+			break
+	what = ", ".join(descs)
+	if len(items) > 3:
+		what += _(" and {0} more line(s)").format(len(items) - 3)
+	narration = "{0}{1}: {2}. {3}".format(
+		party,
+		" – Bill No. {0}".format(bill_no) if bill_no else "",
+		_("Purchase of {0}").format(what) if what else _("as per bill"),
+		_("Details as per the attached bill."),
+	)
+	payload["narration"] = narration
 
 
 def _cost_head_for_supplier(supplier, company):
@@ -349,28 +552,32 @@ def _cost_head_for_supplier(supplier, company):
 	return None
 
 
-def _book_gst_as_cost(payload, company=None):
-	"""For an entity without GST registration: book the bill's GST (and printed
-	round-off) as a plain charge row into the items' own expense head.
+def _fold_gst_into_rates(payload):
+	"""For an entity without GST registration: fold the bill's GST (and printed
+	round-off) INTO the item rates, so the document shows GST-inclusive lines
+	and no separate GST anywhere.
 
-	Version 3 of this behaviour, per the 19/20 Aug decisions:
-	* v1 (tax rows to a GST account) — rejected: the school does no separate GST
-	  accounting (D21).
-	* v2 (gross the item rates up by the GST) — rejected by Vardan sir: the
-	  accountant compares the screen against the paper bill line by line, so
-	  the on-screen rates must stay EXACTLY as printed.
-	* v3 (this): items stay at printed rates; one charge row (category "Total",
-	  never a GST ledger) carries GST + round-off, pointed at the expense head
-	  this supplier's own past invoices book to — so the P&L shows the full
-	  cost in the same head as the goods, exactly like today's manual entry.
-	  Verified empirically that "Valuation and Total" degrades to "Total"
-	  anyway when the Invoice is created from the Receipt, and that service
-	  items never absorb valuation charges — a plain Total row is the one shape
-	  that behaves identically for PR/PI, stock/service.
+	Version 4 of this behaviour — ruled by Chetan Shah in writing (group chat,
+	31 Aug 2026): "In Fountainhead School we will follow the same process which
+	we are currently doing + rate with GST including. No separate GST will be
+	shown in invoice." That IS the school's manual practice: 98.1% of its 3,299
+	submitted receipts carry no tax rows, and accounts types GST-inclusive rates
+	because that is how they verify against the paper.
 
-	Only the PRINTED GST + round-off is ever booked — an unexplained gap between
-	the lines and the printed total stays visible and fails the tally, because
-	absorbing it would hide a misread.
+	History, so nobody resurrects a dead branch:
+	* v1 (tax rows to a GST account) — rejected: no separate GST accounting (D21).
+	* v2 (gross rates up) — rejected at the time as "rates must match the paper";
+	  superseded: accounts' own paper-verification habit is GST-inclusive (D34).
+	* v3 (printed rates + one charge row into the expense head) — verified by
+	  Krunal sir 21 Aug, then superseded by Chetan sir's D34 ruling.
+	* v4 (this): each line's amount grows by its proportional share of
+	  GST + printed round-off; the LAST line absorbs the rounding remainder so
+	  the document lands on the bill's exact grand total. No charge row, no GST
+	  ledger, no expense-head inference needed.
+
+	Only the PRINTED GST + round-off is ever distributed — an unexplained gap
+	between the lines and the printed total stays visible and fails the tally,
+	because absorbing it would hide a misread.
 	"""
 	proj = payload.get("projection") or {}
 	payload["taxes"] = []
@@ -380,49 +587,43 @@ def _book_gst_as_cost(payload, company=None):
 
 	gst = round(float(proj.get("gst_total") or 0), 2)
 	roff = round(float(proj.get("round_off") or 0), 2)
-	amount = round(gst + roff, 2)
-	if gst <= 0 or amount <= 0:
+	spread = round(gst + roff, 2)
+	if gst <= 0 or spread == 0:
 		return
 
-	head = _cost_head_for_supplier((payload.get("fields") or {}).get("supplier"), _resolve_company(company))
-	if not head:
-		payload.setdefault("notes", []).insert(0, _(
-			"⚠ This bill carries GST of {0}, but no expense account could be inferred "
-			"from past invoices — add a charge row of {1} (category Total) to the Taxes "
-			"table yourself, or the document will total less than the bill.").format(
-			frappe.format_value(gst, {"fieldtype": "Currency"}),
-			frappe.format_value(amount, {"fieldtype": "Currency"}),
-		))
+	items = payload.get("items") or []
+	base_total = round(sum(float(i.get("amount") or 0) for i in items), 2)
+	if not items or base_total <= 0:
 		return
 
-	if roff:
-		description = _("GST {0} {1} round-off {2} as printed — booked into item cost (no GST registration)").format(
-			frappe.format_value(gst, {"fieldtype": "Currency"}),
-			"+" if roff > 0 else "−",
-			frappe.format_value(abs(roff), {"fieldtype": "Currency"}),
-		)
-	else:
-		description = _("GST {0} as printed — booked into item cost (no GST registration)").format(
-			frappe.format_value(gst, {"fieldtype": "Currency"})
-		)
+	distributed = 0.0
+	weighted = [i for i in items if float(i.get("amount") or 0) > 0]
+	for n, line in enumerate(weighted):
+		base = float(line.get("amount") or 0)
+		if n == len(weighted) - 1:
+			share = round(spread - distributed, 2)  # last line absorbs the rounding remainder
+		else:
+			share = round(spread * base / base_total, 2)
+			distributed = round(distributed + share, 2)
+		new_amount = round(base + share, 2)
+		qty = float(line.get("quantity") or 1) or 1
+		line["rate_printed"] = line.get("rate")
+		line["amount_printed"] = base
+		line["gst_share"] = share
+		line["amount"] = new_amount
+		line["rate"] = round(new_amount / qty, 4)
 
-	payload["taxes"] = [{
-		"charge_type": "Actual",
-		"category": "Total",
-		"add_deduct_tax": "Add",
-		"account_head": head,
-		"description": description,
-		"tax_amount": amount,
-	}]
-	payload.setdefault("projection", {})["gst_in_cost"] = True
+	payload.setdefault("projection", {})["gst_folded_into_rates"] = True
+	proj["items_total"] = round(sum(float(i.get("amount") or 0) for i in items), 2)
 	payload.setdefault("notes", []).append(_(
-		"This company books GST as part of the item cost (no GST registration): the "
-		"bill's GST of {0} goes in as one charge row into {1} — the same head the "
-		"items book to — so the document totals the printed {2}. Item rates stay "
-		"exactly as printed on the bill."
+		"This company books GST-inclusive rates (no GST registration): the bill's GST "
+		"of {0}{1} has been folded into the item rates in proportion to each line, so "
+		"the lines total the printed {2} and no separate GST appears anywhere — the "
+		"same way accounts enters bills by hand. The rates on screen are therefore "
+		"GST-inclusive, not the bill's printed per-unit rates."
 	).format(
 		frappe.format_value(gst, {"fieldtype": "Currency"}),
-		head,
+		(_(" (+ round-off {0})").format(frappe.format_value(roff, {"fieldtype": "Currency"})) if roff else ""),
 		frappe.format_value(proj.get("bill_grand"), {"fieldtype": "Currency"}),
 	))
 
@@ -592,6 +793,7 @@ def _store_cache(file_url, payload):
 		doc.grand_total = totals.get("grand_total")
 		doc.lines_count = len(payload.get("items") or [])
 		doc.content_hash = _content_hash(file_url)
+		doc.expense_head = _cost_head_for_supplier(fields.get("supplier"), _resolve_company()) or ""
 		doc.extraction_json = json.dumps(payload, ensure_ascii=False, default=str)
 		doc.save(ignore_permissions=True)
 	except Exception:
@@ -1136,6 +1338,10 @@ def read_upload(name):
 	doc.grand_total = totals.get("grand_total")
 	doc.lines_count = len(payload.get("items") or [])
 	doc.content_hash = _content_hash(doc.bill_file)
+	# The ledger this bill will debit — accounts asked to see it in the list
+	# itself ("कौन से ledger में debit हुआ है", 26 Aug), inferred the same way
+	# the expense head has always been: from this supplier's own history.
+	doc.expense_head = _cost_head_for_supplier(fields.get("supplier"), _resolve_company()) or ""
 	doc.extraction_json = json.dumps(payload, ensure_ascii=False, default=str)
 	doc.save()
 
@@ -1147,3 +1353,116 @@ def read_upload(name):
 		"bill_no": doc.bill_no,
 		"grand_total": doc.grand_total,
 	}
+
+
+@frappe.whitelist()
+def quick_post(name):
+	"""Single-line quick post — create the DRAFT Purchase Receipt straight from
+	the queue when every check is green. THE one sanctioned place this module
+	creates a purchase document, and only as option (A) of the approved design
+	(Chetan sir, 26 Aug): a DRAFT, which then walks the normal maker → L1 (Tejas)
+	→ L2 (Krunal) approval flow. Nothing is submitted, ever.
+
+	The five confirmed checks (+ the mandatory-field reality):
+	  1. supplier matched   2. the single line has an item code (learned/picked)
+	  3. amounts tally with the bill   4. bill date inside the accepted window
+	  5. no duplicate/same-day warnings — including the JV route
+	plus: an Item Group suggestion and a Reason for Purchase must exist, because
+	both fields are mandatory and human-owned. Any red → the caller is told why,
+	and the row goes through today's full form flow instead.
+	"""
+	import json
+	from frappe.utils import add_months, get_first_day, getdate, nowdate
+
+	doc = frappe.get_doc("Bill OCR Upload", name)
+	doc.check_permission("write")
+	if not frappe.has_permission("Purchase Receipt", "create"):
+		raise frappe.PermissionError(_("You are not allowed to create Purchase Receipts."))
+
+	if doc.status == "Receipt created":
+		return {"ok": False, "reason": _("Already processed — {0}.").format(doc.created_document)}
+	if doc.status != "Read" or not doc.extraction_json:
+		return {"ok": False, "reason": _("Bill not read yet — read it first.")}
+
+	payload = _serve(json.loads(doc.extraction_json), None)
+	fields = payload.get("fields") or {}
+	items = payload.get("items") or []
+	proj = payload.get("projection") or {}
+	checks = []
+
+	def fail(msg):
+		checks.append(msg)
+
+	supplier = fields.get("supplier")
+	if not supplier:
+		fail(_("no supplier matched"))
+	if len(items) != 1:
+		fail(_("not a single-line bill ({0} lines)").format(len(items)))
+	line = items[0] if items else {}
+	if not line.get("item_code"):
+		fail(_("the line has no item code (nothing learned/picked for this wording)"))
+	if not proj.get("tallies"):
+		fail(_("the amounts do not tally with the bill"))
+
+	bill_date = fields.get("bill_date")
+	if bill_date:
+		months = cint(frappe.conf.get("bill_ocr_late_bill_months") or 1)
+		window_start = get_first_day(add_months(getdate(nowdate()), -months))
+		d = getdate(bill_date)
+		if d < window_start or d > getdate(nowdate()):
+			fail(_("bill date {0} is outside the accepted window").format(bill_date))
+	else:
+		fail(_("no bill date was read"))
+
+	if supplier and fields.get("bill_no"):
+		if _find_duplicates(supplier, fields.get("bill_no")):
+			fail(_("a possible duplicate exists (same supplier + bill no — incl. the JV route)"))
+		if _same_day_bills(supplier, bill_date, fields.get("bill_no")):
+			fail(_("another bill from this supplier on the same day needs a human look"))
+
+	group = ((payload.get("suggestions") or {}).get("custom_item_group") or {}).get("item_group")
+	reason = (payload.get("suggestions") or {}).get("expense_category")
+	if not group:
+		fail(_("no Item Group could be suggested — it decides the approver, a human must pick it"))
+	if not reason:
+		fail(_("no Reason for Purchase could be read off the bill"))
+
+	if checks:
+		return {"ok": False, "reason": _("Not quick-postable: ") + "; ".join(checks)}
+
+	pr = frappe.new_doc("Purchase Receipt")
+	pr.supplier = supplier
+	pr.bill_no = fields.get("bill_no")
+	pr.bill_date = bill_date
+	pr.custom_attachment = doc.bill_file
+	pr.custom_item_group = group
+	pr.custom_reason_for_purchase = reason
+	if payload.get("narration") and pr.meta.has_field("remarks"):
+		pr.remarks = payload["narration"]
+	row = pr.append("items", {
+		"item_code": line["item_code"],
+		"qty": line.get("quantity") or 1,
+		"rate": line.get("rate") or 0,
+	})
+	warehouse = (
+		frappe.db.get_value("Item Default", {"parent": line["item_code"]}, "default_warehouse")
+		or frappe.db.get_single_value("Stock Settings", "default_warehouse")
+	)
+	if warehouse:
+		row.warehouse = warehouse
+	for t in payload.get("taxes") or []:
+		pr.append("taxes", {
+			"category": t.get("category") or "Total",
+			"add_deduct_tax": t.get("add_deduct_tax") or "Add",
+			"charge_type": t.get("charge_type") or "Actual",
+			"account_head": t.get("account_head"),
+			"description": t.get("description"),
+			"tax_amount": t.get("tax_amount"),
+		})
+	try:
+		pr.insert()  # DRAFT — the normal approval workflow takes over from here
+	except Exception as e:
+		return {"ok": False, "reason": _("ERPNext refused the draft: {0}").format(str(e)[:200])}
+
+	return {"ok": True, "purchase_receipt": pr.name,
+	        "message": _("Draft {0} created — it now follows the normal approval flow.").format(pr.name)}

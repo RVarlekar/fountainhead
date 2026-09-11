@@ -64,6 +64,21 @@ fountainhead.bill_ocr = {
 		const tax_rows = fountainhead.bill_ocr.fill_taxes(frm, result.taxes || [], opts.replace);
 		if (tax_rows) filled.push(__("GST into the Taxes table"));
 
+		// Narration, in accounts' own convention (party – bill no: what was bought.
+		// "Details as per the attached bill.") — prefilled, always theirs to edit.
+		if (result.narration && frm.fields_dict.remarks && !frm.doc.remarks) {
+			frm.set_value("remarks", result.narration);
+			filled.push(__("Narration"));
+		}
+
+		// The academic-year dimension: department bills were landing in the OLD
+		// year's bucket because the default was never re-pointed (26 Aug). Fill
+		// the current year when the field exists and is empty — user can change it.
+		if (result.academic_year && frm.fields_dict.fhs_academic_year && !frm.doc.fhs_academic_year) {
+			frm.set_value("fhs_academic_year", result.academic_year);
+			filled.push(__("Academic Year {0}", [result.academic_year]));
+		}
+
 		frappe.show_alert({
 			message: filled.length
 				? __("Filled: {0}", [filled.join(", ")])
@@ -219,8 +234,17 @@ fountainhead.bill_ocr = {
 					fieldname: "item_name",
 					label: __("Item name"),
 					reqd: 1,
-					default: d.item_name || line.description_en || line.description,
-					description: __("Taken from the bill. Edit it to match how your master names things."),
+					// Naming conventions from the 26 Aug sitting: always "Grade",
+					// never "Class"/"Std" — and no year in the name ("Class 2 Hindi
+					// book" is reusable year after year). The default applies the
+					// Grade rule; the description reminds about the year rule.
+					default: (d.item_name || line.description_en || line.description || "").replace(
+						/\b(class|std\.?|standard)\b/gi,
+						"Grade"
+					),
+					description: __(
+						"Taken from the bill. Conventions: write “Grade”, never “Class”; leave the YEAR out of the name so the item is reusable next year."
+					),
 				},
 				{
 					fieldtype: "Link",
@@ -593,6 +617,14 @@ fountainhead.bill_ocr = {
 						? `<span>(${frappe.utils.escape_html(result.vendor_name_english)})</span>`
 						: ""
 				}</p>
+			<p class="small" style="margin-top:-6px">
+				<b>${__("Bill date read")}:</b> ${
+					result.fields && result.fields.bill_date
+						? frappe.datetime.str_to_user(result.fields.bill_date)
+						: "<span class='text-danger'>" + __("not read — set Supplier Invoice Date yourself") + "</span>"
+				}
+				<span class="text-muted"> · ${__("check it against the paper — the posting date stays today's unless you change it")}</span>
+			</p>
 			<table class="table table-bordered table-condensed">${totals_rows}</table>
 			${tally_html}
 			${suggestion_html}
@@ -682,12 +714,16 @@ fountainhead.bill_ocr = {
 			if (!line || !line.__rowname) return;
 			// A manual pick is a human decision — remember it for next time.
 			fountainhead.bill_ocr.assign_item(frm, line, code, { remember: true });
-			$(this)
-				.closest("div")
-				.find(".bill-ocr-pick")
-				.removeClass("btn-primary")
-				.addClass("btn-default");
-			$(this).removeClass("btn-default").addClass("btn-primary");
+			const block = $(this).closest("div");
+			block.find(".bill-ocr-pick").removeClass("btn-primary").addClass("btn-default").each(function () {
+				if ($(this).data("orig-html")) { $(this).html($(this).data("orig-html")); $(this).removeData("orig-html"); }
+			});
+			// Say WHICH item is now on the row, on the button itself — "the name we
+			// selected should be visible" (Chetan sir, 26 Aug demo).
+			const cand = (line.candidates || []).find((c) => c.item_code === code);
+			$(this).data("orig-html", $(this).html());
+			$(this).removeClass("btn-default").addClass("btn-primary")
+				.html(`✓ ${__("Selected")}: ${frappe.utils.escape_html((cand && cand.item_name) || code)}`);
 		});
 
 		// Plain-English correction → re-read → replace the rows with the new reading.
@@ -751,4 +787,53 @@ frappe.ui.form.on("Purchase Invoice", {
 	onload_post_render(frm) {
 		if (frm.is_new() && frm.doc.custom_attachment) fountainhead.bill_ocr.run(frm);
 	},
+	// The 1 Sept RCM/GST booking rules: the two checkboxes are either/or by law
+	// (what carries RCM never also gives credit). Ticking one clears the other;
+	// toggling GST-credit re-serves the cached reading (free) so the taxes table
+	// flips between "GST rows kept" and "GST folded into the rates".
+	custom_gst_credit(frm) {
+		if (frm.doc.custom_gst_credit && frm.doc.custom_rcm) frm.set_value("custom_rcm", 0);
+		fountainhead.bill_ocr.refill_taxes_for_credit(frm);
+	},
+	custom_rcm(frm) {
+		if (frm.doc.custom_rcm && frm.doc.custom_gst_credit) frm.set_value("custom_gst_credit", 0);
+		if (frm.doc.custom_rcm) {
+			frappe.show_alert({
+				message: __("RCM: book the bill without its GST here; the RCM liability accumulates in GST Payable and is settled in the consolidated voucher (Input ↔ RCM-Output adjustment entry)."),
+				indicator: "blue",
+			});
+			fountainhead.bill_ocr.refill_taxes_for_credit(frm);
+		}
+	},
 });
+
+// Re-serve the stored reading (free — it is cached) with the GST-credit answer,
+// and swap ONLY the taxes table + item rates to match. Items already picked by
+// hand are left alone unless the user confirms.
+fountainhead.bill_ocr.refill_taxes_for_credit = function (frm) {
+	if (!frm.doc.custom_attachment) return;
+	// Only meaningful where the company keeps GST rows at all.
+	frappe.call({
+		method: "fountainhead.bill_ocr.api.extract_bill",
+		args: {
+			file_url: frm.doc.custom_attachment,
+			doctype: frm.doctype,
+			company: frm.doc.company,
+			gst_credit: frm.doc.custom_rcm ? 0 : (frm.doc.custom_gst_credit ? 1 : 0),
+		},
+		freeze: true,
+		freeze_message: __("Re-applying the GST treatment…"),
+		callback: (r) => {
+			if (!r.message) return;
+			fountainhead.bill_ocr.fill_items(frm, r.message.items || [], true);
+			frm.clear_table("taxes");
+			fountainhead.bill_ocr.fill_taxes(frm, r.message.taxes || [], true);
+			frappe.show_alert({
+				message: frm.doc.custom_gst_credit
+					? __("GST kept as separate rows (input credit will be claimed).")
+					: __("GST folded into the item rates (no credit on this bill)."),
+				indicator: "blue",
+			});
+		},
+	});
+};

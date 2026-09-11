@@ -20,10 +20,14 @@ function render(page) {
 			const s = r.message;
 			if (!s) return;
 			const inr = (v) => format_currency(v, "INR");
-			const card = (label, value, sub, color) => `
-				<div style="flex:1 1 150px;min-width:150px;border:1px solid var(--border-color);
-					border-radius:8px;padding:14px 16px;background:var(--card-bg)">
-					<div class="text-muted small">${label}</div>
+			// A card with a `route` opens the actual rows behind the number — the
+			// drill-down asked for twice on 26 Aug ("click करूं तो वो bills दिखा दे").
+			const card = (label, value, sub, color, route) => `
+				<div class="bill-ocr-card" ${route ? `data-route='${JSON.stringify(route)}'` : ""}
+					style="flex:1 1 150px;min-width:150px;border:1px solid var(--border-color);
+					border-radius:8px;padding:14px 16px;background:var(--card-bg)${route ? ";cursor:pointer" : ""}"
+					${route ? `title="${__("Click to see these bills")}"` : ""}>
+					<div class="text-muted small">${label}${route ? " ↗" : ""}</div>
 					<div style="font-size:1.6em;font-weight:600;color:${color || "inherit"}">${value}</div>
 					${sub ? `<div class="text-muted small">${sub}</div>` : ""}
 				</div>`;
@@ -49,17 +53,19 @@ function render(page) {
 				<div style="max-width:1000px;margin:0 auto;padding:8px 16px 48px">
 					<h5>${__("Queue")}</h5>
 					<div style="display:flex;gap:12px;flex-wrap:wrap">
-						${card(__("Total bills uploaded"), s.total, __("{0} this month", [s.uploads_this_month]))}
-						${card(__("Pending"), st["Pending"] || 0, "", "var(--orange-500)")}
-						${card(__("Read, awaiting receipt"), st["Read"] || 0, "", "var(--green-600)")}
-						${card(__("Receipt created"), st["Receipt created"] || 0, "", "var(--blue-500)")}
-						${card(__("Errors"), st["Error"] || 0, "", st["Error"] ? "var(--red-500)" : "")}
+						${card(__("Total bills uploaded"), s.total, __("{0} this month", [s.uploads_this_month]), "",
+							{ status: null })}
+						${card(__("Pending"), st["Pending"] || 0, "", "var(--orange-500)", { status: "Pending" })}
+						${card(__("Read, awaiting receipt"), st["Read"] || 0, "", "var(--green-600)", { status: "Read" })}
+						${card(__("Receipt created"), st["Receipt created"] || 0, "", "var(--blue-500)", { status: "Receipt created" })}
+						${card(__("Errors"), st["Error"] || 0, "", st["Error"] ? "var(--red-500)" : "", { status: "Error" })}
 					</div>
 					<h5 style="margin-top:22px">${__("Attention")}</h5>
 					<div style="display:flex;gap:12px;flex-wrap:wrap">
 						${card(__("Late bills in queue"), s.late_pending,
 							__("dated before {0}", [frappe.datetime.str_to_user(s.window_start)]),
-							s.late_pending ? "var(--red-500)" : "var(--green-600)")}
+							s.late_pending ? "var(--red-500)" : "var(--green-600)",
+							{ late_before: s.window_start })}
 						${card(__("Deleted uploads"), s.deleted, __("all time"))}
 					</div>
 					<h5 style="margin-top:22px">${__("Cost — always beside the time it saved")}</h5>
@@ -86,6 +92,22 @@ function render(page) {
 						</div>
 					</div>
 				</div>`);
+
+			// Drill-down: a clicked card routes to the queue list, pre-filtered to
+			// exactly the rows the number counted.
+			$(page.body)
+				.find(".bill-ocr-card[data-route]")
+				.on("click", function () {
+					const route = JSON.parse($(this).attr("data-route"));
+					const filters = {};
+					if (route.status) filters.status = route.status;
+					if (route.late_before) {
+						filters.status = ["in", ["Pending", "Read", "Error"]];
+						filters.bill_date = ["<", route.late_before];
+					}
+					frappe.route_options = filters;
+					frappe.set_route("List", "Bill OCR Upload");
+				});
 		},
 	});
 }

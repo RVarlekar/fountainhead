@@ -119,6 +119,45 @@ frappe.listview_settings["Bill OCR Upload"] = {
 		listview.page.add_inner_button(__("Read all pending"), () => {
 			read_all_pending();
 		});
+
+		// ⚡ Quick post — the 66.8% case: a SINGLE-line bill where every check is
+		// green (supplier, item, tally, date window, no duplicates incl. the JV
+		// route) becomes a DRAFT Purchase Receipt straight from the list. The
+		// draft then walks the normal L1 → L2 approval flow — nothing is ever
+		// submitted from here (design confirmed by accounts, 26 Aug). Any red
+		// check reports its reason and the row goes through the full form.
+		listview.page.add_action_item(__("⚡ Quick post (single-line, all green)"), async () => {
+			const names = listview.get_checked_items(true);
+			if (!names.length) {
+				frappe.msgprint(__("Tick the rows to quick-post first."));
+				return;
+			}
+			const results = [];
+			for (const name of names) {
+				try {
+					const r = await frappe.call({
+						method: "fountainhead.bill_ocr.api.quick_post",
+						args: { name },
+						freeze: true,
+						freeze_message: __("Checking {0}…", [name]),
+					});
+					const m = r.message || {};
+					results.push(
+						m.ok
+							? `✅ ${name} → <a href="/app/purchase-receipt/${m.purchase_receipt}">${m.purchase_receipt}</a> (${__("draft — normal approvals follow")})`
+							: `✋ ${name}: ${frappe.utils.escape_html(m.reason || __("not quick-postable"))}`
+					);
+				} catch (e) {
+					results.push(`❌ ${name}: ${__("server error")}`);
+				}
+			}
+			listview.refresh();
+			frappe.msgprint({
+				title: __("Quick post"),
+				message: results.join("<br>"),
+				indicator: results.every((x) => x.startsWith("✅")) ? "green" : "orange",
+			});
+		});
 	},
 
 	get_indicator(doc) {

@@ -253,9 +253,20 @@ def tokens(value):
 		return set()
 	raw = re.split(r"[^\w]+", str(value).lower())
 	return {
-		t for t in raw
+		_TOKEN_SYNONYMS.get(t, t) for t in raw
 		if t and t not in _STOP_TOKENS and (len(t) > 1 or t.isdigit())
 	}
+
+
+# Vendor wording ↔ master wording, where the two systematically differ. The
+# item master says "Grade"; bills say "class"/"std" for the same thing — the
+# 26 Aug live demo showed "Class 3 Hindi workbook" failing to meet
+# "Grade 3 Hindi Workbook" over exactly this one word.
+_TOKEN_SYNONYMS = {
+	"class": "grade",
+	"std": "grade",
+	"standard": "grade",
+}
 
 
 def token_score(line_tokens, item_tokens):
