@@ -62,6 +62,14 @@ INVOICE_SCHEMA = {
 			"description": "Seller name in English/Latin script (same as vendorName if already English)",
 		},
 		"vendorGstin": {"type": "string"},
+		"vehicleNumber": {
+			"type": "string",
+			"description": (
+				"Indian vehicle registration number printed, written or stamped on the bill "
+				"(e.g. GJ05-JM-0622, GJ 5 BZ 2289) — garage/fuel/spare-part bills usually "
+				"carry the vehicle it was for. Empty string when no vehicle number appears."
+			),
+		},
 		"vendorPan": {"type": "string"},
 		"vendorState": {"type": "string"},
 		"vendorStateCode": {"type": "string"},

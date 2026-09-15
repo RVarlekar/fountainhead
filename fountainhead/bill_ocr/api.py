@@ -1031,6 +1031,30 @@ def mark_upload_processed(doc, method=None):
 		frappe.log_error(title="Bill OCR — mark processed failed", message=frappe.get_traceback())
 
 
+def _match_vehicle(number):
+	"""The Vehicle record whose licence plate matches the number read off the bill.
+
+	Plates are compared with separators stripped (GJ05-JM-0622 == GJ 5 JM 0622 is
+	NOT assumed — the leading zero matters — but dashes/spaces/case do not). Only
+	an exact normalised match is returned: a wrong vehicle silently books the
+	expense against the wrong bus, which is worse than leaving it for the human.
+	"""
+	if not number or not frappe.db.exists("DocType", "Vehicle"):
+		return None
+	try:
+		def norm(v):
+			return "".join(ch for ch in str(v).upper() if ch.isalnum())
+		target = norm(number)
+		if len(target) < 6:
+			return None
+		for v in frappe.get_all("Vehicle", fields=["name", "license_plate"], limit_page_length=0):
+			if norm(v.license_plate or v.name) == target or norm(v.name) == target:
+				return v.name
+	except Exception:
+		pass
+	return None
+
+
 def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful=False, challan_url=None):
 	if doctype not in SUPPORTED_DOCTYPES:
 		frappe.throw(_("Bill OCR does not handle {0}.").format(doctype))
@@ -1270,6 +1294,11 @@ def _run_extraction(file_url, doctype="Purchase Receipt", feedback=None, careful
 			"bill_no": data.get("invoiceNumber"),
 			"bill_date": data.get("invoiceDate"),
 			"supplier": supplier["supplier"],
+			# Garage/fuel/spares bills carry the vehicle they were for (M14):
+			# matched to the Vehicle master so the expense books against the right
+			# bus via the accounting dimension. Offered, never forced.
+			"vehicle": _match_vehicle(data.get("vehicleNumber")),
+			"vehicle_number_on_bill": data.get("vehicleNumber") or None,
 		},
 		"supplier": supplier,
 		"totals": {
@@ -1444,6 +1473,25 @@ def quick_post(name):
 		"qty": line.get("quantity") or 1,
 		"rate": line.get("rate") or 0,
 	})
+	# Chetan sir's sixth check (26 Aug): purchases above ₹15,000 carry a PO —
+	# when a submitted, still-open PO for this supplier has this item pending,
+	# link it so the receipt books against the order instead of floating free.
+	po = frappe.db.sql(
+		"""
+		select poi.parent, poi.name
+		from `tabPurchase Order Item` poi
+		join `tabPurchase Order` po on po.name = poi.parent
+		where po.docstatus = 1 and po.status not in ('Closed', 'Completed', 'Cancelled')
+		  and po.supplier = %(supplier)s and poi.item_code = %(item)s
+		  and poi.qty > ifnull(poi.received_qty, 0)
+		order by po.transaction_date desc limit 1
+		""",
+		{"supplier": supplier, "item": line["item_code"]},
+		as_dict=True,
+	)
+	if po:
+		row.purchase_order = po[0].parent
+		row.purchase_order_item = po[0].name
 	warehouse = (
 		frappe.db.get_value("Item Default", {"parent": line["item_code"]}, "default_warehouse")
 		or frappe.db.get_single_value("Stock Settings", "default_warehouse")

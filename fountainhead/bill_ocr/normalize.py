@@ -60,8 +60,20 @@ def parse_number(raw):
 
 
 def _expand_year(raw):
+	"""'26' → 2026, and also '026' → 2026.
+
+	Handwritten bills produce stray 3-digit years — the 15 Sept test round hit a
+	real one ('12-5-026'), and the old length-based check passed it through as
+	the literal year 26, producing the impossible date 0026-05-12 (the same
+	failure seen in the 26 Aug live demo). Expansion now goes by VALUE: anything
+	below 100 (after dropping stray leading digits' overflow) is a 20xx year.
+	"""
 	n = int(raw)
-	return 2000 + n if len(raw) <= 2 else n
+	if n < 100:
+		return 2000 + n
+	if n < 1000:  # a mangled 3-digit year like '026' or '202'
+		return 2000 + (n % 100)
+	return n
 
 
 def normalize_date(raw):

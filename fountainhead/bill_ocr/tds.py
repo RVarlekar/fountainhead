@@ -60,13 +60,17 @@ def _rule_for(section, on_date):
 
 
 def _cumulative_base(supplier, company, fy_start, fy_end, exclude_invoice=None):
-	"""This supplier's GST-exclusive billing already booked this financial year.
+	"""This supplier's billing already booked in the window — BOTH routes.
 
-	Uses submitted Purchase Invoices' base_net_total (the GST-exclusive figure).
-	JV-booked amounts are not visible here — a documented limitation until the
-	imprest flow moves onto purchase documents.
+	* Submitted Purchase Invoices' base_net_total (the GST-exclusive figure).
+	* Journal-Voucher bookings (the imprest route): the supplier's CREDIT side on
+	  submitted JEs — an expense-Dr/supplier-Cr voucher credits the vendor with
+	  the bill amount. Without this, a vendor billed mostly through JVs would
+	  never appear to cross a threshold.
 	"""
 	cond = "and pi.name != %(exclude)s" if exclude_invoice else ""
+	args = {"supplier": supplier, "company": company, "fy_start": str(fy_start),
+	        "fy_end": str(fy_end), "exclude": exclude_invoice or ""}
 	rows = frappe.db.sql(
 		f"""
 		select ifnull(sum(pi.base_net_total), 0)
@@ -74,10 +78,22 @@ def _cumulative_base(supplier, company, fy_start, fy_end, exclude_invoice=None):
 		where pi.docstatus = 1 and pi.supplier = %(supplier)s and pi.company = %(company)s
 		  and pi.posting_date between %(fy_start)s and %(fy_end)s {cond}
 		""",
-		{"supplier": supplier, "company": company, "fy_start": str(fy_start),
-		 "fy_end": str(fy_end), "exclude": exclude_invoice or ""},
+		args,
 	)
-	return flt(rows[0][0]) if rows else 0.0
+	pi_total = flt(rows[0][0]) if rows else 0.0
+	je_rows = frappe.db.sql(
+		"""
+		select ifnull(sum(jea.credit_in_account_currency), 0)
+		from `tabJournal Entry Account` jea
+		join `tabJournal Entry` je on je.name = jea.parent
+		where je.docstatus = 1 and je.company = %(company)s
+		  and je.posting_date between %(fy_start)s and %(fy_end)s
+		  and jea.party_type = 'Supplier' and jea.party = %(supplier)s
+		""",
+		args,
+	)
+	je_total = flt(je_rows[0][0]) if je_rows else 0.0
+	return pi_total + je_total
 
 
 @frappe.whitelist()
@@ -115,9 +131,19 @@ def compute_tds(supplier, company, taxable_amount, section=None, bill_date=None,
 		rate_reason = _(" — HIGHER RATE: supplier PAN is {0}").format(
 			_("missing") if not pan else _("invalid ({0})").format(pan))
 
-	fy_start, fy_end = _fy_bounds(bill_date)
-	prev_cum = _cumulative_base(supplier, company, fy_start, fy_end, exclude_invoice)
+	# 194I-type rules test the aggregate PER MONTH/part-month; everything else
+	# per financial year. The rule says which (threshold_is_monthly).
+	if cint(rule.get("threshold_is_monthly")):
+		d = getdate(bill_date)
+		win_start = getdate(f"{d.year}-{d.month:02d}-01")
+		win_end = frappe.utils.get_last_day(d)
+		window_label = _("month {0}").format(d.strftime("%b %Y"))
+	else:
+		win_start, win_end = _fy_bounds(bill_date)
+		window_label = _("FY")
+	prev_cum = _cumulative_base(supplier, company, win_start, win_end, exclude_invoice)
 	cum = round(prev_cum + taxable_amount, 2)
+	fy_start, fy_end = _fy_bounds(bill_date)
 
 	single = flt(rule.threshold_single)
 	aggregate = flt(rule.threshold_aggregate)
@@ -232,11 +258,11 @@ FY_2026_27_RULES = [
 	dict(section="194J-Technical", old_section="194J / Sec. 393(1) T6(iii)", nature="Technical Services",
 	     rate=2, threshold_aggregate=50000, treatment="Full amount once crossed"),
 	dict(section="194I-Building", old_section="194I / Sec. 393(1) T2(ii)", nature="Rent – Land / Building / Furniture",
-	     rate=10, threshold_single=50000, treatment="Full amount once crossed",
-	     notes="Threshold is ₹50,000 per month/part-month — checked per bill here."),
+	     rate=10, threshold_aggregate=50000, threshold_is_monthly=1, treatment="Full amount once crossed",
+	     notes="₹50,000 per month/part-month — the aggregate window is the bill's month."),
 	dict(section="194I-Plant", old_section="194I / Sec. 393(1) T2(ii)", nature="Rent – Plant & Machinery",
-	     rate=2, threshold_single=50000, treatment="Full amount once crossed",
-	     notes="Threshold is ₹50,000 per month/part-month — checked per bill here."),
+	     rate=2, threshold_aggregate=50000, threshold_is_monthly=1, treatment="Full amount once crossed",
+	     notes="₹50,000 per month/part-month — the aggregate window is the bill's month."),
 	dict(section="194H", old_section="194H / Sec. 393(1) T1(ii)", nature="Commission / Brokerage",
 	     rate=2, threshold_aggregate=20000, treatment="Full amount once crossed"),
 	dict(section="194Q", old_section="194Q / Sec. 393(1) T8(ii)", nature="Purchase of Goods",
@@ -255,7 +281,24 @@ def seed_rules():
 	if not frappe.db.exists("DocType", "Bill TDS Rule"):
 		return
 	for spec in FY_2026_27_RULES:
-		if frappe.db.exists("Bill TDS Rule", {"section": spec["section"], "effective_from": "2026-04-01"}):
+		existing = frappe.db.get_value(
+			"Bill TDS Rule", {"section": spec["section"], "effective_from": "2026-04-01"},
+			["name", "threshold_single", "threshold_aggregate", "threshold_is_monthly"], as_dict=True,
+		)
+		if existing:
+			# One-time shape fix for 194I rows seeded before the monthly-window
+			# field existed — touched ONLY while they still carry the exact old
+			# seed values (an accounts edit is never overwritten).
+			if (spec.get("threshold_is_monthly")
+					and flt(existing.threshold_single) == 50000
+					and not flt(existing.threshold_aggregate)
+					and not cint(existing.threshold_is_monthly)):
+				frappe.db.set_value("Bill TDS Rule", existing.name, {
+					"threshold_single": 0,
+					"threshold_aggregate": 50000,
+					"threshold_is_monthly": 1,
+					"notes": spec.get("notes"),
+				})
 			continue
 		account = frappe.db.get_value(
 			"Account",

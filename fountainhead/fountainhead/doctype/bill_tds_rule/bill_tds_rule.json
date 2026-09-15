@@ -19,6 +19,7 @@
   "column_break_rates",
   "threshold_single",
   "threshold_aggregate",
+  "threshold_is_monthly",
   "treatment",
   "section_posting",
   "payable_account",
@@ -102,8 +103,15 @@
   {
    "fieldname": "threshold_aggregate",
    "fieldtype": "Currency",
-   "label": "Aggregate FY threshold",
-   "description": "TDS applies once the supplier's cumulative GST-exclusive billing in the financial year crosses this. 0 = no aggregate test."
+   "label": "Aggregate threshold",
+   "description": "TDS applies once the supplier's cumulative GST-exclusive billing in the period crosses this. 0 = no aggregate test."
+  },
+  {
+   "default": "0",
+   "fieldname": "threshold_is_monthly",
+   "fieldtype": "Check",
+   "label": "Aggregate is per MONTH (not per FY)",
+   "description": "194I rent: the threshold applies per month/part-month. Ticked, the cumulative window is the bill's month; unticked, the financial year."
   },
   {
    "default": "Full amount once crossed",
@@ -133,7 +141,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-11 12:00:00.000000",
+ "modified": "2026-09-15 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Fountainhead",
  "name": "Bill TDS Rule",

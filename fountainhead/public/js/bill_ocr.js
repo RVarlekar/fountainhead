@@ -79,6 +79,21 @@ fountainhead.bill_ocr = {
 			filled.push(__("Academic Year {0}", [result.academic_year]));
 		}
 
+		// Vehicle number read off the bill (transport asks, M14): matched against
+		// the Vehicle master server-side; filled only on an exact plate match and
+		// only where the form carries the vehicle dimension.
+		if (result.fields.vehicle && frm.fields_dict.vehicle && !frm.doc.vehicle) {
+			frm.set_value("vehicle", result.fields.vehicle);
+			filled.push(__("Vehicle {0}", [result.fields.vehicle]));
+		} else if (result.fields.vehicle_number_on_bill && !result.fields.vehicle) {
+			frappe.show_alert({
+				message: __("Bill carries vehicle no {0} — no exact match in the Vehicle master, pick it yourself.", [
+					result.fields.vehicle_number_on_bill,
+				]),
+				indicator: "orange",
+			});
+		}
+
 		frappe.show_alert({
 			message: filled.length
 				? __("Filled: {0}", [filled.join(", ")])

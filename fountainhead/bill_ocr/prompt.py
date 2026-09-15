@@ -27,6 +27,7 @@ Rules:
     something like "Cutting and fitting work on existing frame" — not "Hey mate juni seming".
     Where the text is already English, repeat it in `descriptionEn` unchanged.
   * Do the same for the seller: `vendorName` as printed, `vendorNameEn` in English/Latin script.
+- VEHICLE NUMBER. Vehicle repair, fuel, tyre and spare-part bills usually carry the vehicle's registration number (printed in a "Vehicle No." box, or handwritten anywhere on the bill, e.g. GJ05-JM-0622). Copy it into vehicleNumber exactly as written; leave it empty when no vehicle number appears. Never invent one.
 - Decide whether any freight / packing / handling charge is INSIDE the taxed value (set ancillaryCharges = "taxed_inclusive") or added OUTSIDE it and untaxed (set ancillaryCharges = "untaxed_separate" AND list it in otherCharges). If you are unsure, populate otherCharges conservatively and set your best guess in ancillaryCharges.
 - expenseCategory is the NATURE of the expense (e.g. "ceiling fans", "office rent"), NOT the vendor name or a SKU string.
 - The VENDOR is the SELLER/supplier (issuer, usually the letterhead at the top). The BUYER is the "Bill to" / "Receiver" / "Billed to" party. Put the BUYER's name in targetCompany. Do NOT swap them: vendorGstin is the seller's, companyGstin is the buyer's.
