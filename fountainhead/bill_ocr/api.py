@@ -11,10 +11,11 @@ sir's "nothing posts automatically" rule true by construction.
 """
 
 import mimetypes
+import re
 
 import frappe
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
 from fountainhead.bill_ocr import extract, match, normalize
 
@@ -400,11 +401,90 @@ def _serve(payload, company=None, gst_credit=None):
 				"less than the bill.").format(
 				frappe.format_value(p.get("gst_total"), {"fieldtype": "Currency"}))
 			)
+	_demote_note_lines(payload)
 	_refresh_new_item_candidates(payload)
 	_set_narration(payload)
 	_late_bill_note(payload)
+	_stamp_total_check(payload)
 	payload["academic_year"] = _active_academic_year()
 	return payload
+
+
+# An amount inside stamp text: "21,000/-", "Rs. 20,180/-", "₹ 21000". Requires
+# the ₹/Rs prefix or the "/-" suffix so dates (22.04.2026) and serials never match.
+_STAMP_AMT_RE = re.compile(
+	r"(?:₹|Rs\.?)\s*((?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?)"
+	r"|((?:\d{1,3}(?:,\d{2,3})+|\d{3,})(?:\.\d{1,2})?)\s*/-"
+)
+
+
+def _stamp_total_check(payload):
+	"""Payment/receipt stamps usually carry the amount that was actually booked or
+	paid — the bank's number, not handwriting. Test-round case: Mayur Mandap bill
+	૪૬૩, handwritten total misread as 24,000, while the E-NET stamp on the same
+	paper said "21,000/-" (the booked figure). When every amount found in stamp
+	text disagrees with the read grand total, warn — never block (Vardan sir's
+	rule), and stay silent when any stamp amount confirms the total.
+	"""
+	grand = flt((payload.get("totals") or {}).get("grand_total"))
+	if not grand:
+		return
+	amounts = []
+	for stamp in (payload.get("approval_marks") or {}).get("stamps") or []:
+		for m in _STAMP_AMT_RE.finditer(str(stamp)):
+			amt = flt((m.group(1) or m.group(2) or "").replace(",", ""))
+			if amt >= 100:  # ignore small fragments / serials
+				amounts.append(amt)
+	if not amounts or any(abs(a - grand) < 1 for a in amounts):
+		return
+	closest = min(amounts, key=lambda a: abs(a - grand))
+	payload.setdefault("notes", []).insert(0, _(
+		"⚠ A stamp on this bill mentions {0}, but the total read from the bill is {1}. "
+		"Stamped amounts are usually the paid/booked figure — re-check the handwritten "
+		"total before posting.").format(
+		frappe.format_value(closest, {"fieldtype": "Currency"}),
+		frappe.format_value(grand, {"fieldtype": "Currency"})))
+
+
+# A document reference written on the bill: FS/PR-3906, FS-PI/0281, PO 1234 …
+_DOC_REF_RE = re.compile(r"\b[A-Z]{0,4}\s?[-/]?\s?(?:PR|PI|PO|GRN)\s?[-/]\s?0*\d{2,}\b", re.I)
+
+
+def _demote_note_lines(payload):
+	"""Footer text captured as zero-value item rows (test-round case: Bharat Lace
+	1598 — "Grade 1 to 8, all material used for creative material" and the
+	reference "FS/PR-3906" came through as items). A row with no rate AND no
+	amount that reads like a remark or a document reference is a note, not a
+	purchase line — surface it in notes instead of the items grid. Zero-rate rows
+	with a real quantity (free/sample goods) are left alone.
+	"""
+	items = payload.get("items") or []
+	keep, demoted = [], []
+	for it in items:
+		desc = (it.get("description") or "").strip()
+		desc_en = (it.get("description_en") or "").strip()
+		looks_like_note = (
+			len((desc_en or desc).split()) >= 4
+			or _DOC_REF_RE.search(desc)
+			or _DOC_REF_RE.search(desc_en)
+		)
+		if (not flt(it.get("amount")) and not flt(it.get("rate"))
+				and not it.get("is_charge") and flt(it.get("quantity")) <= 1
+				and looks_like_note):
+			demoted.append(it)
+		else:
+			keep.append(it)
+	if not demoted:
+		return
+	payload["items"] = keep
+	notes = payload.setdefault("notes", [])
+	for it in demoted:
+		desc = (it.get("description") or "").strip()
+		desc_en = (it.get("description_en") or "").strip()
+		shown = desc or desc_en
+		if desc_en and desc_en != shown:
+			shown = f"{shown} — {desc_en}"
+		notes.append(_("ℹ Text on the bill (not an item line): {0}").format(shown))
 
 
 def _active_academic_year():

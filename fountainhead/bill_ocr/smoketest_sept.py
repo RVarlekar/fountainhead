@@ -121,6 +121,42 @@ def run():
 	check("_je_with_reference callable", api._je_with_reference("X", "Y") == [])
 	check("_active_academic_year safe", api._active_academic_year() is None or isinstance(api._active_academic_year(), str))
 
+	# 11. stamp-vs-total cross-check (16 Sept — the Mayur Mandap ૪૬૩ case)
+	p5 = {"totals": {"grand_total": 24000.0},
+	      "approval_marks": {"stamps": ["E-NET Ref. No. 21,000/- Amt. 20,180/- Date 22.04.2026 Bill No."]}}
+	api._stamp_total_check(p5)
+	check("stamp mismatch -> warning", any("21,000" in n or "21000" in n for n in p5.get("notes", [])),
+	      (p5.get("notes") or [""])[0][:80])
+	p6 = {"totals": {"grand_total": 21000.0},
+	      "approval_marks": {"stamps": ["E-NET Ref. No. 21,000/- Amt. 20,180/- Date 22.04.2026"]}}
+	api._stamp_total_check(p6)
+	check("stamp agrees -> silent", not p6.get("notes"))
+	p7 = {"totals": {"grand_total": 5000.0},
+	      "approval_marks": {"stamps": ["Received on 07-08-2026", "FOUNTAINHEAD SCHOOL"]}}
+	api._stamp_total_check(p7)
+	check("date-only stamp -> no false amount", not p7.get("notes"))
+
+	# 12. footer-note demotion (16 Sept — the Bharat Lace 1598 case)
+	p8 = {"items": [
+	    {"description": "Woolen thread", "description_en": "Woolen thread", "quantity": 180, "rate": 10, "amount": 1800},
+	    {"description": "Grade 1 to 8, All material used for coactive material",
+	     "description_en": "Grade 1 to 8, All material used for creative material",
+	     "quantity": 1, "rate": 0, "amount": 0},
+	    {"description": "F/PR-3906", "description_en": "F/PR-3906", "quantity": 1, "rate": 0, "amount": 0},
+	    {"description": "Sample copy", "description_en": "Sample copy", "quantity": 2, "rate": 0, "amount": 0},
+	]}
+	api._demote_note_lines(p8)
+	check("note lines demoted (4 -> 2 items)", len(p8["items"]) == 2, f"{len(p8['items'])} items")
+	check("demoted text kept as notes", sum("not an item line" in n for n in p8.get("notes", [])) == 2)
+	check("free-sample line (qty 2, rate 0) kept",
+	      any(i.get("description") == "Sample copy" for i in p8["items"]))
+
+	# 13. prompt hardening present
+	from fountainhead.bill_ocr import prompt
+	check("prompt: bill-date-not-from-stamps rule", "NEVER take it from a rubber stamp" in prompt.USER_PROMPT)
+	check("prompt: no-arithmetic-fitting rule", "NEVER adjust one figure" in prompt.USER_PROMPT)
+	check("prompt: footer notes excluded from lines", "are NOT lines" in prompt.USER_PROMPT)
+
 	# cleanup test vendor fields (leave the vendor; harmless on a dev site)
 	frappe.db.rollback()
 	print()
