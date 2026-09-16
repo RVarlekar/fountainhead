@@ -157,6 +157,36 @@ def run():
 	check("prompt: no-arithmetic-fitting rule", "NEVER adjust one figure" in prompt.USER_PROMPT)
 	check("prompt: footer notes excluded from lines", "are NOT lines" in prompt.USER_PROMPT)
 
+	# 14. handwritten corrected date wins (16 Sept — Chetan sir's Metro GT/166 rule)
+	from fountainhead.bill_ocr import normalize as nrm
+	d1, n1 = nrm.normalize({"invoiceDate": "30/06/2026", "correctedDateHandwritten": "22/07/2026"})
+	check("corrected date wins (30/06 -> 22/07)", d1.get("invoiceDate") == "2026-07-22", d1.get("invoiceDate"))
+	check("printed date kept for audit", d1.get("printed_invoice_date") == "2026-06-30")
+	check("correction note present", any("corrected by hand" in n for n in n1))
+	d2, _ = nrm.normalize({"invoiceDate": "30/06/2026"})
+	check("no correction -> printed date stands", d2.get("invoiceDate") == "2026-06-30")
+
+	# 15. supplier re-match at serve time (16 Sept — supplier created after read)
+	p9 = {"supplier": {"supplier": None, "candidates": []},
+	      "vendor_name_on_bill": "METRO PRINTERS", "vendor_name_english": "METRO PRINTERS",
+	      "fields": {}}
+	api._refresh_supplier_match(p9)
+	check("cached reading re-matches a now-existing supplier",
+	      p9["fields"].get("supplier") == "METRO PRINTERS",
+	      str(p9["supplier"].get("supplier")))
+
+	# 16. item-group grid columns (16 Sept — mixed-bill readability, Ankit Patel)
+	for dt in ("Purchase Receipt Item", "Purchase Invoice Item"):
+	    check(f"{dt}.item_group in grid",
+	          frappe.db.exists("Property Setter", {"doc_type": dt, "field_name": "item_group",
+	                                               "property": "in_list_view", "value": "1"}))
+
+	# 17. item-group creation without leaving the form
+	g = api.create_item_group_from_bill("_SELFTEST GROUP", None)
+	check("create_item_group_from_bill", g.get("created") and g.get("item_group") == "_SELFTEST GROUP")
+	g2 = api.create_item_group_from_bill("_SELFTEST GROUP", None)
+	check("existing group -> selected, not duplicated", g2.get("existed"))
+
 	# cleanup test vendor fields (leave the vendor; harmless on a dev site)
 	frappe.db.rollback()
 	print()

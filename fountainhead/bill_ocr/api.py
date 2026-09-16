@@ -402,6 +402,7 @@ def _serve(payload, company=None, gst_credit=None):
 				frappe.format_value(p.get("gst_total"), {"fieldtype": "Currency"}))
 			)
 	_demote_note_lines(payload)
+	_refresh_supplier_match(payload)
 	_refresh_new_item_candidates(payload)
 	_set_narration(payload)
 	_late_bill_note(payload)
@@ -516,6 +517,59 @@ def _active_academic_year():
 		return rows[0] if rows else None
 	except Exception:
 		return None
+
+
+def _refresh_supplier_match(payload):
+	"""A supplier created AFTER the bill was first read must still match.
+
+	Found in the 15 Sept accounts sitting (Prabhat Diesel / Bagrecha Brothers):
+	the reading is cached with supplier=None from read time, so creating the
+	supplier and re-attaching the same bill left the field empty forever. The
+	match is against the CURRENT master, so it belongs at serve time, exactly
+	like the mid-batch item rescan below.
+	"""
+	sup = payload.get("supplier") or {}
+	if sup.get("supplier"):
+		return
+	name = payload.get("vendor_name_english") or payload.get("vendor_name_on_bill")
+	if not name:
+		return
+	try:
+		res = match.match_supplier(name)
+	except Exception:
+		return
+	if res:
+		payload["supplier"] = res
+		if res.get("supplier"):
+			payload.setdefault("fields", {})["supplier"] = res.get("supplier")
+
+
+@frappe.whitelist()
+def create_item_group_from_bill(item_group_name, parent_item_group=None):
+	"""Create an Item Group WITHOUT leaving the Purchase form.
+
+	The 15 Sept sitting hit the full failure chain: creating a group via the
+	link field's "Create new" navigated off the unsaved Purchase Receipt, the
+	reading was lost, and Back logged the user out. This keeps the whole thing
+	inside the dialog.
+	"""
+	if not frappe.has_permission("Item Group", "create"):
+		raise frappe.PermissionError(_("You do not have permission to create Item Groups."))
+	item_group_name = (item_group_name or "").strip()
+	if not item_group_name:
+		frappe.throw(_("Give the group a name."))
+	if frappe.db.exists("Item Group", item_group_name):
+		return {"created": False, "item_group": item_group_name, "existed": True}
+	doc = frappe.get_doc({
+		"doctype": "Item Group",
+		"item_group_name": item_group_name,
+		"parent_item_group": parent_item_group
+		or frappe.db.get_value("Item Group", {"is_group": 1, "parent_item_group": ""}, "name")
+		or "All Item Groups",
+		"is_group": 0,
+	})
+	doc.insert()
+	return {"created": True, "item_group": doc.name}
 
 
 def _refresh_new_item_candidates(payload):

@@ -80,6 +80,14 @@ INVOICE_SCHEMA = {
 		# Header
 		"invoiceNumber": {"type": "string"},
 		"invoiceDate": {"type": "string", "description": "As printed on the bill"},
+		# 26 Aug demo (MoM 12 D5) + Metro GT/166: accounts circle the printed date
+		# and write the date they book the bill under — that correction wins.
+		"correctedDateHandwritten": {
+			"type": "string",
+			"description": "Only when the printed bill date is circled/struck out and a "
+			"handwritten date is written on the bill as its correction: that handwritten "
+			"date, exactly as written. Absent otherwise. Never a stamp date.",
+		},
 		"placeOfSupplyStateCode": {"type": "string"},
 		"lines": {"type": "array", "items": INVOICE_LINE},
 		# Tax block — amounts exactly as printed

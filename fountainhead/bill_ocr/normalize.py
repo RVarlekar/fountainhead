@@ -386,6 +386,21 @@ def normalize(raw):
 		if raw.get("invoiceDate"):
 			notes.append(f"Could not read the invoice date {raw.get('invoiceDate')!r}. Please enter it.")
 
+	# A handwritten correction over the circled printed date wins — that is the
+	# date accounts books the bill under (Chetan sir, 26 Aug demo, MoM 12 D5;
+	# reference bill: Metro GT/166 — printed 30/06, circled, "22/07/2026" written).
+	corrected, _corr_ambiguous = normalize_date(data.pop("correctedDateHandwritten", None))
+	if corrected and corrected != data.get("invoiceDate"):
+		printed = data.get("invoiceDate")
+		data["printed_invoice_date"] = printed
+		data["invoiceDate"] = corrected
+		notes.insert(
+			0,
+			f"The printed bill date{f' ({printed})' if printed else ''} is corrected by hand "
+			f"to {corrected} — using the handwritten date, as accounts books the bill under "
+			"the corrected date. Check it against the paper.",
+		)
+
 	for key in (
 		"taxableValue", "cgstAmount", "sgstAmount", "igstAmount",
 		"cessAmount", "roundOff", "totalInvoiceValue",

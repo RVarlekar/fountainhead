@@ -217,6 +217,19 @@ def _set_pr_grid_columns():
 			for_doctype=False, validate_fields_for_doctype=False,
 		)
 
+	# 15 Sept accounts sitting: one bill can mix vehicle-repair and kitchen
+	# lines — the grid must SHOW each row's Item Group so mixed bills are
+	# readable at a glance (Ankit Patel's ask). Both purchase grids.
+	for doctype in ("Purchase Receipt Item", "Purchase Invoice Item"):
+		make_property_setter(
+			doctype, "item_group", "in_list_view", 1, "Check",
+			for_doctype=False, validate_fields_for_doctype=False,
+		)
+		make_property_setter(
+			doctype, "item_group", "columns", 2, "Int",
+			for_doctype=False, validate_fields_for_doctype=False,
+		)
+
 
 def _seed_tds_rules():
 	from fountainhead.bill_ocr import tds
