@@ -166,14 +166,18 @@ def run():
 	d2, _ = nrm.normalize({"invoiceDate": "30/06/2026"})
 	check("no correction -> printed date stands", d2.get("invoiceDate") == "2026-06-30")
 
-	# 15. supplier re-match at serve time (16 Sept — supplier created after read)
-	p9 = {"supplier": {"supplier": None, "candidates": []},
-	      "vendor_name_on_bill": "METRO PRINTERS", "vendor_name_english": "METRO PRINTERS",
-	      "fields": {}}
-	api._refresh_supplier_match(p9)
-	check("cached reading re-matches a now-existing supplier",
-	      p9["fields"].get("supplier") == "METRO PRINTERS",
-	      str(p9["supplier"].get("supplier")))
+	# 15. supplier re-match at serve time (16 Sept — supplier created after read).
+	# Site-agnostic: any existing supplier stands in for one created after the
+	# bill was read — the suite must stay green on fh AND protego.
+	existing_sup = frappe.get_all("Supplier", limit_page_length=1, pluck="name")
+	if existing_sup:
+	    p9 = {"supplier": {"supplier": None, "candidates": []},
+	          "vendor_name_on_bill": existing_sup[0], "vendor_name_english": existing_sup[0],
+	          "fields": {}}
+	    api._refresh_supplier_match(p9)
+	    check("cached reading re-matches a now-existing supplier",
+	          p9["fields"].get("supplier") == existing_sup[0],
+	          str(p9["supplier"].get("supplier")))
 
 	# 16. item-group grid columns (16 Sept — mixed-bill readability, Ankit Patel)
 	for dt in ("Purchase Receipt Item", "Purchase Invoice Item"):
