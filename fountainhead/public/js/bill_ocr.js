@@ -482,7 +482,13 @@ fountainhead.bill_ocr = {
 		// for the mandatory Reason for Purchase — the user still owns the wording,
 		// since the real reason ("Grade 5 exam papers") is context no bill carries.
 		// The button TOGGLES: insert ↔ undo (restores whatever was there before).
-		const category = (result.suggestions || {}).expense_category;
+		// custom_reason_for_purchase / custom_item_group are FS-specific header
+		// fields — a Protego (or any other entity's) form doesn't have them, and
+		// set_value on a missing field throws. Offer each suggestion only where
+		// its field exists.
+		const category = frm.fields_dict.custom_reason_for_purchase
+			? (result.suggestions || {}).expense_category
+			: null;
 		const reason_html = category
 			? `<div class="alert alert-info" style="margin-top:12px">
 					<b>${__("Reason for Purchase")}:</b> ${frappe.utils.escape_html(category)}
@@ -499,7 +505,9 @@ fountainhead.bill_ocr = {
 		// approver. A supplier whose history spans groups gets each meaningful
 		// group as its own button — for a mixed bill the user must decide which
 		// approval chain this document goes down. Buttons toggle (apply ↔ undo).
-		const suggestion = (result.suggestions || {}).custom_item_group;
+		const suggestion = frm.fields_dict.custom_item_group
+			? (result.suggestions || {}).custom_item_group
+			: null;
 		const group_options = suggestion
 			? [suggestion, ...(suggestion.others || [])]
 			: [];
