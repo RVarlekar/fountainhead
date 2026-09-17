@@ -28,30 +28,44 @@ def run():
 	    check(f"PR Item {f} out of grid",
 	          frappe.db.exists("Property Setter", {"doc_type": "Purchase Receipt Item", "field_name": f, "property": "in_list_view"}))
 
-	# 4. v4 fold — unit test on a fake payload (Metro shape: 24,202 + 4,356 = 28,558)
+	# 4a. v5 — FS format: printed rates + ONE "GST" line in the items table
+	#     (Metro shape: 24,202 + GST 4,356.36 + round-off -0.36 = 28,558)
 	from fountainhead.bill_ocr import api
-	payload = {
-	    "projection": {"items_total": 24202.0, "gst_total": 4356.36, "round_off": -0.36,
-	                   "bill_grand": 28558.0, "tallies": True, "lines_tax_inclusive": False},
-	    "items": [
-	        {"description": "A", "quantity": 10, "rate": 157, "amount": 1570.0},
-	        {"description": "B", "quantity": 100, "rate": 172, "amount": 17200.0},
-	        {"description": "C", "quantity": 29.048128, "rate": 187, "amount": 5432.0},
-	    ],
-	    "fields": {"supplier": None},
-	}
+	def metro_payload():
+	    return {
+	        "projection": {"items_total": 24202.0, "gst_total": 4356.36, "round_off": -0.36,
+	                       "bill_grand": 28558.0, "tallies": True, "lines_tax_inclusive": False},
+	        "items": [
+	            {"description": "A", "quantity": 10, "rate": 157, "amount": 1570.0},
+	            {"description": "B", "quantity": 100, "rate": 172, "amount": 17200.0},
+	            {"description": "C", "quantity": 29.048128, "rate": 187, "amount": 5432.0},
+	        ],
+	        "fields": {"supplier": None},
+	    }
+	p_v5 = metro_payload()
+	api._gst_as_item_line(p_v5)
+	check("v5: one GST line added (3 -> 4 items)", len(p_v5["items"]) == 4)
+	gst_line = p_v5["items"][-1]
+	check("v5: GST line = 4356.00 (GST + printed round-off)", abs(gst_line["amount"] - 4356.00) < 0.01,
+	      str(gst_line["amount"]))
+	check("v5: item rates stay as printed", p_v5["items"][0]["rate"] == 157 and p_v5["items"][0]["amount"] == 1570.0)
+	check("v5: rows total the bill grand", abs(p_v5["projection"]["items_total"] - 28558.0) < 0.01)
+	check("v5: no tax rows", p_v5["taxes"] == [])
+	check("v5: flag set", p_v5["projection"].get("gst_as_item_line") is True)
+	p_incl = {"projection": {"gst_total": 100, "round_off": 0, "lines_tax_inclusive": True},
+	          "items": [{"quantity": 1, "rate": 100, "amount": 100}]}
+	api._gst_as_item_line(p_incl)
+	check("v5: tax-inclusive bill untouched", len(p_incl["items"]) == 1 and p_incl["items"][0]["amount"] == 100)
+
+	# 4b. v4 fold — still the GST-entity credit-blocked path (kitchen/vehicle bills)
+	payload = metro_payload()
 	api._fold_gst_into_rates(payload)
 	folded_total = round(sum(i["amount"] for i in payload["items"]), 2)
-	check(f"v4 fold: items now total {folded_total} (bill 28558.0)", abs(folded_total - 28558.0) < 0.01)
-	check("v4 fold: no charge row", payload["taxes"] == [])
-	check("v4 fold: flag set", payload["projection"].get("gst_folded_into_rates") is True)
-	check("v4 fold: printed rate preserved for audit", payload["items"][0].get("rate_printed") == 157)
-
-	# inclusive bills untouched
-	p2 = {"projection": {"gst_total": 100, "round_off": 0, "lines_tax_inclusive": True},
-	      "items": [{"quantity": 1, "rate": 100, "amount": 100}]}
-	api._fold_gst_into_rates(p2)
-	check("v4 fold: tax-inclusive bill untouched", p2["items"][0]["amount"] == 100)
+	check(f"bridge fold: items now total {folded_total} (bill 28558.0)", abs(folded_total - 28558.0) < 0.01)
+	check("bridge fold: no charge row", payload["taxes"] == [])
+	check("bridge fold: flag set", payload["projection"].get("gst_folded_into_rates") is True)
+	check("bridge fold: printed rate preserved for audit", payload["items"][0].get("rate_printed") == 157)
+	check("bridge fold: no extra line added", len(payload["items"]) == 3)
 
 	# 5. narration
 	p3 = {"fields": {"supplier": "Metro Printers", "bill_no": "1475"},

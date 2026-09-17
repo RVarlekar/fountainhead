@@ -38,29 +38,33 @@ means no — with the gap, and on multi-page scans a per-page breakdown ("page 1
 again when the document is saved: a mismatched total produces a warning (orange,
 never blocking — the human decides).
 
-## 3. GST treatment — ruled 31 August 2026
+## 3. GST treatment
 
 Whether GST becomes separate tax rows is a property of the **Company**, via the
 flag *"GST registered (Bill OCR books tax rows)"*:
 
-- **Flag OFF (the school — no GST registration, no input credit):** the bill's
-  GST plus its printed round-off is **folded into the item rates in proportion
-  to each line**, so the document shows **GST-inclusive rates and no separate
-  GST anywhere** — the same way accounts has always entered bills by hand.
-  The last line absorbs the rounding remainder so the document lands on the
-  bill's exact printed total. **No GST ledger is touched and none is created.**
-  Ruled in writing by Chetan Shah (31 Aug): *"rate with GST including. No
-  separate GST will be shown in invoice."* (This supersedes the earlier
-  one-charge-row shape verified on 21 Aug.)
+- **Flag OFF (the school — no GST registration, no input credit): v5, set
+  17 Sept 2026.** The items stay at their **printed rates**, and **one extra
+  line called "GST" is added to the items table itself**, carrying the bill's
+  whole GST plus the printed round-off — so the rows sum to the bill's exact
+  grand total and there are **no tax rows**. An item named "GST" already exists
+  in the FS master (currently disabled — enable it, or create one from the line,
+  once). ⚠ *Approval trail:* requested by Lavesh as Chetan sir's approved format;
+  it revises the written 31 Aug ruling ("rate with GST including. No separate GST
+  will be shown in invoice."), so **Chetan sir's one-line re-confirmation is
+  required before this deploys.** History: v1 tax rows → v2 gross-up → v3 one
+  charge row (Krunal sir "Perfect", 21/26 Aug) → v4 fold into rates (31 Aug
+  ruling) → **v5 GST as an item line (current)**.
 - **Flag ON (GST-registered entities, e.g. Protego):** the printed CGST/SGST/
   IGST amounts fill the Purchase Taxes and Charges table as separate rows,
   exactly as printed — **unless the "Claim GST credit" box on the bill is left
-  unticked**, in which case the GST folds into the rates for that bill (credit
-  is item/usage-based, not vendor-based — 1 Sept rules).
+  unticked**, in which case the GST **folds into the item rates (v4 style)** for
+  that bill — matching the kitchen's manual full-amount practice (credit is
+  item/usage-based, not vendor-based — 1 Sept rules).
 - Bills whose line amounts already include the tax are never touched — adding
   or folding again would double-count.
-- Only the PRINTED GST + round-off is ever distributed. An unexplained gap
-  between the lines and the printed total stays visible and fails the tally.
+- Only the PRINTED GST + round-off is ever added or distributed. An unexplained
+  gap between the lines and the printed total stays visible and fails the tally.
 
 ### 3a. GST credit and RCM (GST-registered entities only)
 

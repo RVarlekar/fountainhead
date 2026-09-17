@@ -389,7 +389,12 @@ def _serve(payload, company=None, gst_credit=None):
 	* Late-bill warning: computed against TODAY, because a bill can sit in the
 	  queue for days after it was first read.
 	"""
-	if not _entity_books_gst(company) or (gst_credit is not None and not cint(gst_credit)):
+	if not _entity_books_gst(company):
+		# FS (v5): printed rates + ONE "GST" line in the items table itself.
+		_gst_as_item_line(payload)
+	elif gst_credit is not None and not cint(gst_credit):
+		# GST entity, credit blocked for THIS bill (kitchen/vehicle categories):
+		# fold into the rates — matches the kitchen's manual full-amount practice.
 		_fold_gst_into_rates(payload)
 	else:
 		# Registered entity, GST printed, but no account head was found to book it.
@@ -684,6 +689,68 @@ def _cost_head_for_supplier(supplier, company):
 		if rows and rows[0][0] and frappe.db.get_value("Account", rows[0][0], "disabled") == 0:
 			return rows[0][0]
 	return None
+
+
+def _gst_as_item_line(payload):
+	"""v5 — the FS format: items stay at their PRINTED rates, and ONE extra line
+	called "GST" is added to the items table carrying the bill's whole GST plus
+	the printed round-off, so the rows sum to the bill's exact grand total. No
+	tax rows anywhere.
+
+	Requested by Lavesh (17 Sept 2026) as the format Chetan sir approved; an item
+	literally named "GST" already exists in the FS master (Events group, currently
+	disabled), so the practice predates this code. ⚠ NOTE: this supersedes v4
+	(fold-into-rates, Chetan sir's written D34 ruling of 31 Aug) — get his one-line
+	re-confirmation before this deploys. v4 (_fold_gst_into_rates) stays in use for
+	the GST-entity credit-blocked path.
+	"""
+	proj = payload.get("projection") or {}
+	payload["taxes"] = []
+
+	if proj.get("lines_tax_inclusive") or proj.get("gst_as_item_line"):
+		return
+
+	gst = round(float(proj.get("gst_total") or 0), 2)
+	roff = round(float(proj.get("round_off") or 0), 2)
+	extra = round(gst + roff, 2)
+	if gst <= 0 or extra == 0:
+		return
+	items = payload.get("items") or []
+	if not items:
+		return
+
+	item_code = (
+		frappe.db.get_value("Item", {"name": "GST", "disabled": 0}, "name")
+		or frappe.db.get_value("Item", {"item_name": "GST", "disabled": 0}, "name")
+	)
+	items.append({
+		"description": "GST (as per bill)",
+		"description_en": "GST (as per bill)",
+		"is_translated": False,
+		"is_charge": False,
+		"gst_line": True,
+		"quantity": 1.0,
+		"rate": extra,
+		"amount": extra,
+		"uom": None,
+		"item_code": item_code,
+		"candidates": [],
+	})
+	proj["gst_as_item_line"] = True
+	proj["items_total"] = round(sum(float(i.get("amount") or 0) for i in items), 2)
+
+	fmt = lambda v: frappe.format_value(v, {"fieldtype": "Currency"})  # noqa: E731
+	notes = payload.setdefault("notes", [])
+	notes.append(_(
+		"This company books GST as its own line in the items table: the items stay at "
+		"their printed rates and one GST line of {0} (GST {1}{2}) makes the rows total "
+		"the bill's grand amount. No tax rows are used.").format(
+		fmt(extra), fmt(gst),
+		_(" including round-off {0}").format(fmt(roff)) if roff else ""))
+	if not item_code and frappe.db.exists("Item", "GST"):
+		notes.append(_(
+			"ℹ An item named \"GST\" exists in the master but is DISABLED — enable it "
+			"(or create a fresh one from the GST line below) so this line can be posted."))
 
 
 def _fold_gst_into_rates(payload):
