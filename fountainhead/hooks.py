@@ -54,9 +54,12 @@ doctype_js = {
 	# It only ever fills fields in the browser; it never saves or submits.
 	# cash_memo.js adds the one-click Cash Memo number button.
 	"Purchase Receipt": ["public/js/bill_ocr.js", "public/js/cash_memo.js"],
-	"Purchase Invoice": ["public/js/bill_ocr.js", "public/js/cash_memo.js"],
+	"Purchase Invoice": ["public/js/bill_ocr.js", "public/js/cash_memo.js", "public/js/tds_suggest.js"],
+	# GSTIN → PAN auto-fill on the vendor master (chars 3–12, per the 1 Sept rule).
+	"Supplier": "public/js/supplier_statutory.js",
 }
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
+# Purchase Invoice list: bulk action that writes the HDFC E-Net payment file.
+doctype_list_js = {"Purchase Invoice": "public/js/pi_list_enet.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
@@ -164,7 +167,11 @@ doc_events = {
 	# not tally with what the attached bill printed; after save, mark the queue
 	# row "Receipt created" so finished work drops out of the working list.
 	"Purchase Receipt": {
-		"validate": "fountainhead.bill_ocr.api.check_against_bill",
+		"validate": [
+			"fountainhead.bill_ocr.api.check_against_bill",
+			# the imprest route: warn when this supplier + bill no already went through a JV
+			"fountainhead.bill_ocr.api.check_purchase_against_je",
+		],
 		"on_update": "fountainhead.bill_ocr.api.mark_upload_processed",
 	},
 	"Purchase Invoice": {
@@ -172,8 +179,20 @@ doc_events = {
 		"validate": [
 			"fountainhead.bill_ocr.api.inherit_bill_attachment",
 			"fountainhead.bill_ocr.api.check_against_bill",
+			"fountainhead.bill_ocr.api.check_purchase_against_je",
+			# TDS working shown when applicable — suggestion only, never a deduction
+			"fountainhead.bill_ocr.tds.suggest_tds",
 		],
 		"on_update": "fountainhead.bill_ocr.api.mark_upload_processed",
+	},
+	# The other half of the imprest duplicate net (Chetan sir, 26 Aug): a JV whose
+	# supplier + reference already exists as a bill — either route — gets a warning.
+	"Journal Entry": {
+		"validate": "fountainhead.bill_ocr.api.check_je_duplicates",
+	},
+	# GSTIN → PAN derivation + format validation, server-side (the JS mirrors it).
+	"Supplier": {
+		"validate": "fountainhead.bill_ocr.install.derive_pan_from_gstin",
 	},
 }
 

@@ -38,26 +38,50 @@ means no — with the gap, and on multi-page scans a per-page breakdown ("page 1
 again when the document is saved: a mismatched total produces a warning (orange,
 never blocking — the human decides).
 
-## 3. GST treatment — decided 19–20 August 2026
+## 3. GST treatment
 
 Whether GST becomes separate tax rows is a property of the **Company**, via the
 flag *"GST registered (Bill OCR books tax rows)"*:
 
-- **Flag OFF (the school — no GST registration, no input credit):** item rows
-  keep the **exact printed rates**. The bill's GST plus its printed round-off is
-  booked as **one charge row (category "Total") into the same expense head the
-  supplier's own past invoices book to** — so the P&L carries the full cost in
-  one head, exactly like the manual entry always has. **No GST ledger is touched
-  and none is created.** If no head can be inferred from history, the system
-  warns and books nothing rather than guessing.
+- **Flag OFF (the school — no GST registration, no input credit): v5, set
+  17 Sept 2026.** The items stay at their **printed rates**, and **one extra
+  line called "GST" is added to the items table itself**, carrying the bill's
+  whole GST plus the printed round-off — so the rows sum to the bill's exact
+  grand total and there are **no tax rows**. An item named "GST" already exists
+  in the FS master (currently disabled — enable it, or create one from the line,
+  once). ⚠ *Approval trail:* requested by Lavesh as Chetan sir's approved format;
+  it revises the written 31 Aug ruling ("rate with GST including. No separate GST
+  will be shown in invoice."), so **Chetan sir's one-line re-confirmation is
+  required before this deploys.** History: v1 tax rows → v2 gross-up → v3 one
+  charge row (Krunal sir "Perfect", 21/26 Aug) → v4 fold into rates (31 Aug
+  ruling) → **v5 GST as an item line (current)**.
 - **Flag ON (GST-registered entities, e.g. Protego):** the printed CGST/SGST/
   IGST amounts fill the Purchase Taxes and Charges table as separate rows,
-  exactly as printed.
-- Bills whose line amounts already include the tax get no extra row in either
-  mode — adding one would double-count.
+  exactly as printed — **unless the "Claim GST credit" box on the bill is left
+  unticked**, in which case the GST **folds into the item rates (v4 style)** for
+  that bill — matching the kitchen's manual full-amount practice (credit is
+  item/usage-based, not vendor-based — 1 Sept rules).
+- Bills whose line amounts already include the tax are never touched — adding
+  or folding again would double-count.
+- Only the PRINTED GST + round-off is ever added or distributed. An unexplained
+  gap between the lines and the printed total stays visible and fails the tally.
 
-Confirmed by accounts (Krunal Bhagat, 21 Aug): pre-GST rates on the lines with
-GST as a combined charge line is the intended booking.
+### 3a. GST credit and RCM (GST-registered entities only)
+
+Two checkboxes on the bill, **mutually exclusive** (per accounts' written rules,
+1 Sept — what carries RCM never also gives credit):
+
+- **Claim GST credit (ITC)** — tick only when this bill's GST is claimable.
+  Eligibility is maintained **category-wise** in the accounts-editable *ITC
+  Eligibility Category* master (professional/legal/IT/office/repairs/security/
+  housekeeping = generally eligible; personal, canteen/food, passenger
+  transport, motor vehicles = blocked/restricted), never in code. Unticked:
+  the GST stays in the cost.
+- **RCM applicable** (e.g. lawyer bills): the bill is booked without its GST
+  here; the RCM liability is created by the standard adjustment entry
+  (Dr Input GST / Cr RCM-Output GST on the invoice value), **accumulates in GST
+  Payable, and is settled in one consolidated monthly voucher** — confirmed by
+  accounts, 1–2 Sept.
 
 ## 4. Dates
 
@@ -71,12 +95,18 @@ GST as a combined charge line is the intended booking.
 
 ## 5. Duplicates
 
-Three separate checks, all warnings a human can overrule:
+Four separate checks, all warnings a human can overrule:
 
 1. **Same supplier + same invoice number** already on a Receipt or Invoice.
 2. **Same supplier + same date + a different invoice number** — two bills from
    one vendor in one day can be the same purchase billed twice.
 3. **The same file (byte-for-byte)** queued again — caught by content hash.
+4. **The Journal Voucher route (imprest bills):** a JV whose supplier + reference
+   number matches a bill number — in either direction. Entering a bill that a JV
+   already booked warns; saving a JV whose reference an invoice (or another JV)
+   already carries warns too. Whichever way the second entry comes, the person
+   is told at entry time (accounts' explicit 26 Aug ask). Invoice numbers alone
+   are never trusted — handwritten bills often carry a dummy ("cash", a date).
 
 ## 6. Approval marks
 
@@ -119,21 +149,66 @@ decides.
   re-verified pass; the correction box re-reads with the user's own words as
   reviewer instructions. Both cost one fresh reading.
 
-## 10. What this system will never do
+## 10. TDS — computed at booking, suggested, never silently deducted
 
-- Post, submit, or save any purchase document by itself.
+Built to accounts' written spec (26 Aug mail) and clarifications (1–2 Sept):
+
+- Rules live in the **Bill TDS Rule** master — rates, thresholds, treatments are
+  **data accounts can edit**, never code. Rules carry effective dates; a
+  computation always uses the rule in force **on the bill date**, so next year's
+  change can never rewrite a booked entry (no retroactivity).
+- TDS is determined from the **nature of the payment + vendor type + section +
+  threshold — never from a ledger name**. A vendor with a TDS section is NOT
+  deducted automatically: below the threshold, no TDS.
+- The **vendor-wise cumulative** (GST-exclusive, per financial year) is tracked
+  from the supplier's own submitted invoices; once the aggregate threshold is
+  crossed, every later bill that year is subject. The crossing bill follows the
+  rule's own treatment (full amount, or only the excess — configurable per
+  section, e.g. 194Q taxes only the excess over ₹50 lakh).
+- TDS is computed on the **GST-exclusive** base. A **missing or invalid PAN**
+  triggers the higher rate (20% default) and flags the bill.
+- Posting: **one liability ledger per section** — "TDS Payable – 194J",
+  "TDS Payable – 194C", "TDS Payable – 192B" and so on; **calculated and
+  deducted at bill booking, same day** (accounts, 2 Sept).
+- On screen, the FULL working is always shown — section, rate, previous
+  cumulative, this bill, cumulative, threshold, TDS amount, net payable, and the
+  reason in words — and the deduction row is added only when the maker clicks
+  **Apply**. The suggestion changes nothing by itself.
+
+## 11. Narration
+
+Every filled document carries a prefilled narration in accounts' own convention
+(their samples, 1 Sept): *party name – Bill No. X: what was bought/done. Details
+as per the attached bill.* Always editable — the narration is the accountant's;
+the system only saves the typing.
+
+## 12. Quick post (single-line bills)
+
+66.8% of receipts have exactly one line. A queued bill becomes a **DRAFT**
+Purchase Receipt straight from the list ONLY when every check is green:
+supplier matched · the single line's item is known · amounts tally · bill date
+inside the window · **no duplicate of any kind, including the JV route** · an
+Item Group and Reason for Purchase could be read. The draft then walks the
+normal maker → L1 → L2 approval flow. **Nothing is ever submitted.** Any red
+check names its reason and the bill goes through the full form instead.
+
+## 13. Vendor payments (HDFC E-Net file)
+
+Approved, submitted invoices with an outstanding amount can be written into the
+bank's upload file (28-column RBI format, headerless, named
+`8892RBI<DDMM>.<serial>`): **"I"** for HDFC-to-HDFC transfers, **"N"** (NEFT)
+otherwise; beneficiary code/account/IFSC come from the Supplier master. The file
+**moves no money** — it is uploaded to E-Net by the authorised person and the
+bank's own approvals still apply. Drafts and paid bills are refused; a supplier
+with missing bank details fails loudly, per supplier.
+
+## 14. What this system will never do
+
+- **Submit** any document, ever. (Quick post creates a *draft*, visibly, from
+  green checks — the approval chain is untouched.)
 - Choose the Item Group, or silently create items or suppliers.
+- Deduct TDS, or claim GST credit, without a human click.
 - Absorb an arithmetic gap the bill's own printed figures don't explain.
 - Send emails or notifications — everything surfaces on screen and dashboards.
 - Touch a GST ledger for an entity without GST registration.
-
-## 11. Pending accounting rules (not yet active)
-
-These are documented so the roadmap is auditable; none of them run today:
-
-- **TDS suggestions** — awaiting the confirmed section/rate/threshold table for
-  FY 2026-27 (194J/194I/194C/194H/194Q), the 20% no-PAN rule, and
-  accrual-vs-payment timing from accounts. TDS will be suggested from the
-  vendor master once confirmed — never auto-deducted.
-- **ITC / RCM handling** — relevant only to GST-registered entities; planned for
-  the Protego rollout.
+- Move money. The payment file is typing saved, not control removed.

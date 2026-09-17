@@ -60,8 +60,20 @@ def parse_number(raw):
 
 
 def _expand_year(raw):
+	"""'26' → 2026, and also '026' → 2026.
+
+	Handwritten bills produce stray 3-digit years — the 15 Sept test round hit a
+	real one ('12-5-026'), and the old length-based check passed it through as
+	the literal year 26, producing the impossible date 0026-05-12 (the same
+	failure seen in the 26 Aug live demo). Expansion now goes by VALUE: anything
+	below 100 (after dropping stray leading digits' overflow) is a 20xx year.
+	"""
 	n = int(raw)
-	return 2000 + n if len(raw) <= 2 else n
+	if n < 100:
+		return 2000 + n
+	if n < 1000:  # a mangled 3-digit year like '026' or '202'
+		return 2000 + (n % 100)
+	return n
 
 
 def normalize_date(raw):
@@ -373,6 +385,21 @@ def normalize(raw):
 		data.pop("invoiceDate", None)
 		if raw.get("invoiceDate"):
 			notes.append(f"Could not read the invoice date {raw.get('invoiceDate')!r}. Please enter it.")
+
+	# A handwritten correction over the circled printed date wins — that is the
+	# date accounts books the bill under (Chetan sir, 26 Aug demo, MoM 12 D5;
+	# reference bill: Metro GT/166 — printed 30/06, circled, "22/07/2026" written).
+	corrected, _corr_ambiguous = normalize_date(data.pop("correctedDateHandwritten", None))
+	if corrected and corrected != data.get("invoiceDate"):
+		printed = data.get("invoiceDate")
+		data["printed_invoice_date"] = printed
+		data["invoiceDate"] = corrected
+		notes.insert(
+			0,
+			f"The printed bill date{f' ({printed})' if printed else ''} is corrected by hand "
+			f"to {corrected} — using the handwritten date, as accounts books the bill under "
+			"the corrected date. Check it against the paper.",
+		)
 
 	for key in (
 		"taxableValue", "cgstAmount", "sgstAmount", "igstAmount",

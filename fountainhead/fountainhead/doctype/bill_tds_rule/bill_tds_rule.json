@@ -1,0 +1,189 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:{section} (from {effective_from})",
+ "creation": "2026-09-11 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section",
+  "old_section",
+  "nature",
+  "column_break_head",
+  "effective_from",
+  "disabled",
+  "section_rates",
+  "rate",
+  "rate_individual_huf",
+  "rate_no_pan",
+  "column_break_rates",
+  "threshold_single",
+  "threshold_aggregate",
+  "threshold_is_monthly",
+  "treatment",
+  "section_posting",
+  "payable_account",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "section",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Section (key)",
+   "reqd": 1,
+   "description": "e.g. 194C, 194J-Professional, 194I-Building. The key the Supplier's TDS Section points at."
+  },
+  {
+   "fieldname": "old_section",
+   "fieldtype": "Data",
+   "label": "Old section / new Act reference",
+   "description": "e.g. 194J / Sec. 393(1) Table 6(iii) — shown on the approval breakdown."
+  },
+  {
+   "fieldname": "nature",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Nature of payment",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "effective_from",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Effective from",
+   "reqd": 1,
+   "description": "Rules are versioned: computations use the latest rule already in force on the BILL date. Next year's change never touches booked entries."
+  },
+  {
+   "default": "0",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "label": "Disabled"
+  },
+  {
+   "fieldname": "section_rates",
+   "fieldtype": "Section Break",
+   "label": "Rate and thresholds"
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Percent",
+   "in_list_view": 1,
+   "label": "Rate %",
+   "reqd": 1
+  },
+  {
+   "fieldname": "rate_individual_huf",
+   "fieldtype": "Percent",
+   "label": "Rate % for Individual / HUF",
+   "description": "Leave 0 when the rate does not differ by vendor type (194C: 1% Ind/HUF, 2% others)."
+  },
+  {
+   "default": "20",
+   "fieldname": "rate_no_pan",
+   "fieldtype": "Percent",
+   "label": "Higher rate % when PAN missing/invalid"
+  },
+  {
+   "fieldname": "column_break_rates",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "threshold_single",
+   "fieldtype": "Currency",
+   "label": "Per-bill threshold",
+   "description": "TDS applies when a single bill exceeds this. 0 = no per-bill test."
+  },
+  {
+   "fieldname": "threshold_aggregate",
+   "fieldtype": "Currency",
+   "label": "Aggregate threshold",
+   "description": "TDS applies once the supplier's cumulative GST-exclusive billing in the period crosses this. 0 = no aggregate test."
+  },
+  {
+   "default": "0",
+   "fieldname": "threshold_is_monthly",
+   "fieldtype": "Check",
+   "label": "Aggregate is per MONTH (not per FY)",
+   "description": "194I rent: the threshold applies per month/part-month. Ticked, the cumulative window is the bill's month; unticked, the financial year."
+  },
+  {
+   "default": "Full amount once crossed",
+   "fieldname": "treatment",
+   "fieldtype": "Select",
+   "label": "Threshold treatment",
+   "options": "Full amount once crossed\nOnly the excess over the threshold",
+   "description": "What the crossing bill is taxed on — configurable per section, per the spec."
+  },
+  {
+   "fieldname": "section_posting",
+   "fieldtype": "Section Break",
+   "label": "Posting"
+  },
+  {
+   "fieldname": "payable_account",
+   "fieldtype": "Link",
+   "label": "TDS Payable ledger (per section)",
+   "options": "Account",
+   "description": "One liability ledger per section — \"TDS Payable – 194J\", \"TDS Payable – 194C\" and so on (accounts, 2 Sept)."
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-09-15 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Fountainhead",
+ "name": "Bill TDS Rule",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  }
+ ],
+ "sort_field": "section",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

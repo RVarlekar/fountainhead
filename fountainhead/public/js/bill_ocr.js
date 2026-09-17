@@ -64,6 +64,36 @@ fountainhead.bill_ocr = {
 		const tax_rows = fountainhead.bill_ocr.fill_taxes(frm, result.taxes || [], opts.replace);
 		if (tax_rows) filled.push(__("GST into the Taxes table"));
 
+		// Narration, in accounts' own convention (party – bill no: what was bought.
+		// "Details as per the attached bill.") — prefilled, always theirs to edit.
+		if (result.narration && frm.fields_dict.remarks && !frm.doc.remarks) {
+			frm.set_value("remarks", result.narration);
+			filled.push(__("Narration"));
+		}
+
+		// The academic-year dimension: department bills were landing in the OLD
+		// year's bucket because the default was never re-pointed (26 Aug). Fill
+		// the current year when the field exists and is empty — user can change it.
+		if (result.academic_year && frm.fields_dict.fhs_academic_year && !frm.doc.fhs_academic_year) {
+			frm.set_value("fhs_academic_year", result.academic_year);
+			filled.push(__("Academic Year {0}", [result.academic_year]));
+		}
+
+		// Vehicle number read off the bill (transport asks, M14): matched against
+		// the Vehicle master server-side; filled only on an exact plate match and
+		// only where the form carries the vehicle dimension.
+		if (result.fields.vehicle && frm.fields_dict.vehicle && !frm.doc.vehicle) {
+			frm.set_value("vehicle", result.fields.vehicle);
+			filled.push(__("Vehicle {0}", [result.fields.vehicle]));
+		} else if (result.fields.vehicle_number_on_bill && !result.fields.vehicle) {
+			frappe.show_alert({
+				message: __("Bill carries vehicle no {0} — no exact match in the Vehicle master, pick it yourself.", [
+					result.fields.vehicle_number_on_bill,
+				]),
+				indicator: "orange",
+			});
+		}
+
 		frappe.show_alert({
 			message: filled.length
 				? __("Filled: {0}", [filled.join(", ")])
@@ -151,7 +181,10 @@ fountainhead.bill_ocr = {
 	// would otherwise overwrite what the bill actually says.
 	assign_item(frm, line, item_code, opts) {
 		opts = opts || {};
-		const dt = "Purchase Receipt Item";
+		// The dialog runs on Purchase Receipt AND Purchase Invoice — the child
+		// doctype must follow the form (15 Sept sitting: rows on a PI never got
+		// their item set because this was hardcoded to the PR child).
+		const dt = frm.doc.doctype + " Item";
 		return frappe.model
 			.set_value(dt, line.__rowname, "item_code", item_code)
 			.then(() => frappe.model.set_value(dt, line.__rowname, "qty", line.quantity || 1))
@@ -193,7 +226,7 @@ fountainhead.bill_ocr = {
 	// Not a one-click button, on purpose: 2,291 of the 6,141 items in this system
 	// were created in the last year and it already contains typo-duplicates like
 	// "Foam Roller 6" / "Fuam Roller 6". Every new item must be a decision.
-	create_item(frm, line, result) {
+	create_item(frm, line, result, $src_btn) {
 		const d = line.create_defaults || {};
 		const stock = d.stock || {};
 
@@ -219,8 +252,17 @@ fountainhead.bill_ocr = {
 					fieldname: "item_name",
 					label: __("Item name"),
 					reqd: 1,
-					default: d.item_name || line.description_en || line.description,
-					description: __("Taken from the bill. Edit it to match how your master names things."),
+					// Naming conventions from the 26 Aug sitting: always "Grade",
+					// never "Class"/"Std" — and no year in the name ("Class 2 Hindi
+					// book" is reusable year after year). The default applies the
+					// Grade rule; the description reminds about the year rule.
+					default: (d.item_name || line.description_en || line.description || "").replace(
+						/\b(class|std\.?|standard)\b/gi,
+						"Grade"
+					),
+					description: __(
+						"Taken from the bill. Conventions: write “Grade”, never “Class”; leave the YEAR out of the name so the item is reusable next year."
+					),
 				},
 				{
 					fieldtype: "Link",
@@ -228,6 +270,11 @@ fountainhead.bill_ocr = {
 					label: __("Item Group"),
 					options: "Item Group",
 					reqd: 1,
+					// only_select: the link field's own "Create a new Item Group" NAVIGATES
+					// off the unsaved Purchase form — the 15 Sept sitting lost the whole
+					// reading (and got logged out) that way. Groups are created with the
+					// button below instead, without leaving this dialog.
+					only_select: 1,
 					default: d.item_group || frm.doc.custom_item_group,
 					onchange() {
 						const g = this.get_value();
@@ -258,6 +305,50 @@ fountainhead.bill_ocr = {
 						: __("The bill did not state a unit."),
 				},
 				{
+					fieldtype: "Button",
+					fieldname: "new_group",
+					label: __("+ New Item Group (stay on this bill)"),
+					click: () => {
+						frappe.prompt(
+							[
+								{
+									fieldname: "group_name",
+									fieldtype: "Data",
+									label: __("Item Group name"),
+									reqd: 1,
+								},
+								{
+									fieldname: "parent_group",
+									fieldtype: "Link",
+									label: __("Parent group (optional)"),
+									options: "Item Group",
+									only_select: 1,
+								},
+							],
+							(v) => {
+								frappe.call({
+									method: "fountainhead.bill_ocr.api.create_item_group_from_bill",
+									args: { item_group_name: v.group_name, parent_item_group: v.parent_group },
+									freeze: true,
+									callback: (r) => {
+										const m = r.message || {};
+										if (!m.item_group) return;
+										dlg.set_value("item_group", m.item_group);
+										frappe.show_alert({
+											message: m.existed
+												? __("{0} already existed — selected it.", [m.item_group])
+												: __("Item Group {0} created and selected.", [m.item_group]),
+											indicator: "green",
+										});
+									},
+								});
+							},
+							__("New Item Group"),
+							__("Create")
+						);
+					},
+				},
+				{
 					fieldtype: "Check",
 					fieldname: "is_stock_item",
 					label: __("This is a stock item (it goes into inventory)"),
@@ -270,12 +361,23 @@ fountainhead.bill_ocr = {
 				{ fieldtype: "HTML", fieldname: "similar" },
 			],
 			primary_action_label: __("Create item"),
-			primary_action: (v) => fountainhead.bill_ocr._do_create(frm, line, result, dlg, v, 0),
+			primary_action: (v) => fountainhead.bill_ocr._do_create(frm, line, result, dlg, v, 0, $src_btn),
 		});
 		dlg.show();
 	},
 
-	_do_create(frm, line, result, dlg, values, acknowledged) {
+	// Marks the line's button in the SUMMARY dialog so the user can see, per row,
+	// what has already been handled — "I created 5 items and lost track of which"
+	// (15 Sept sitting). Same visual as the ✓ Selected pick-buttons.
+	_mark_line_done($btn, label) {
+		if (!$btn || !$btn.length) return;
+		$btn.removeClass("btn-default")
+			.addClass("btn-primary")
+			.prop("disabled", true)
+			.html(`✓ ${frappe.utils.escape_html(label)}`);
+	},
+
+	_do_create(frm, line, result, dlg, values, acknowledged, $src_btn) {
 		frappe.call({
 			method: "fountainhead.bill_ocr.api.create_item_from_bill",
 			args: {
@@ -320,16 +422,24 @@ fountainhead.bill_ocr = {
 						</div>`
 					);
 					dlg.get_field("similar").$wrapper.find(".bill-ocr-useexisting").on("click", function () {
-						fountainhead.bill_ocr.assign_item(frm, line, $(this).data("code"));
+						const code = $(this).data("code");
+						// Picking an existing item here is as deliberate as a pick-button
+						// click — remember the wording→item mapping the same way.
+						fountainhead.bill_ocr.assign_item(frm, line, code, { remember: true });
+						fountainhead.bill_ocr._mark_line_done($src_btn, `${__("Selected")}: ${code}`);
 						dlg.hide();
 					});
 					dlg.get_field("similar").$wrapper.find(".bill-ocr-forcecreate").on("click", () =>
-						fountainhead.bill_ocr._do_create(frm, line, result, dlg, values, 1)
+						fountainhead.bill_ocr._do_create(frm, line, result, dlg, values, 1, $src_btn)
 					);
 					return;
 				}
 				if (m.created) {
-					fountainhead.bill_ocr.assign_item(frm, line, m.item_code);
+					// remember: a created item is the strongest wording→item mapping there
+					// is — next scan of the same wording must auto-fill it, never ask to
+					// create again (15 Sept sitting, point 2).
+					fountainhead.bill_ocr.assign_item(frm, line, m.item_code, { remember: true });
+					fountainhead.bill_ocr._mark_line_done($src_btn, `${__("Created")}: ${m.item_code}`);
 					dlg.hide();
 				}
 			},
@@ -443,7 +553,13 @@ fountainhead.bill_ocr = {
 		// for the mandatory Reason for Purchase — the user still owns the wording,
 		// since the real reason ("Grade 5 exam papers") is context no bill carries.
 		// The button TOGGLES: insert ↔ undo (restores whatever was there before).
-		const category = (result.suggestions || {}).expense_category;
+		// custom_reason_for_purchase / custom_item_group are FS-specific header
+		// fields — a Protego (or any other entity's) form doesn't have them, and
+		// set_value on a missing field throws. Offer each suggestion only where
+		// its field exists.
+		const category = frm.fields_dict.custom_reason_for_purchase
+			? (result.suggestions || {}).expense_category
+			: null;
 		const reason_html = category
 			? `<div class="alert alert-info" style="margin-top:12px">
 					<b>${__("Reason for Purchase")}:</b> ${frappe.utils.escape_html(category)}
@@ -460,7 +576,9 @@ fountainhead.bill_ocr = {
 		// approver. A supplier whose history spans groups gets each meaningful
 		// group as its own button — for a mixed bill the user must decide which
 		// approval chain this document goes down. Buttons toggle (apply ↔ undo).
-		const suggestion = (result.suggestions || {}).custom_item_group;
+		const suggestion = frm.fields_dict.custom_item_group
+			? (result.suggestions || {}).custom_item_group
+			: null;
 		const group_options = suggestion
 			? [suggestion, ...(suggestion.others || [])]
 			: [];
@@ -592,7 +710,26 @@ fountainhead.bill_ocr = {
 					result.vendor_name_english !== result.vendor_name_on_bill
 						? `<span>(${frappe.utils.escape_html(result.vendor_name_english)})</span>`
 						: ""
+				}
+				${
+					// No match in the master → offer creation right here. The button sets
+					// the form's Supplier field itself.
+					!(result.supplier && result.supplier.supplier) &&
+					result.can_create_supplier &&
+					(result.vendor_name_english || result.vendor_name_on_bill)
+						? `<button class="btn btn-xs btn-default bill-ocr-createsupplier" style="margin-left:8px">
+								+ ${__("Create this supplier")}
+							</button>`
+						: ""
 				}</p>
+			<p class="small" style="margin-top:-6px">
+				<b>${__("Bill date read")}:</b> ${
+					result.fields && result.fields.bill_date
+						? frappe.datetime.str_to_user(result.fields.bill_date)
+						: "<span class='text-danger'>" + __("not read — set Supplier Invoice Date yourself") + "</span>"
+				}
+				<span class="text-muted"> · ${__("check it against the paper — the posting date stays today's unless you change it")}</span>
+			</p>
 			<table class="table table-bordered table-condensed">${totals_rows}</table>
 			${tally_html}
 			${suggestion_html}
@@ -672,7 +809,46 @@ fountainhead.bill_ocr = {
 
 		d.$body.on("click", ".bill-ocr-create", function () {
 			const line = result.items[parseInt($(this).data("line"), 10)];
-			if (line) fountainhead.bill_ocr.create_item(frm, line, result);
+			if (line) fountainhead.bill_ocr.create_item(frm, line, result, $(this));
+		});
+
+		// "+ Create this supplier" — stays on the form, sets the Supplier field
+		// itself (15 Sept sitting: the supplier had to be created by hand in
+		// another tab, and the field still stayed empty).
+		d.$body.on("click", ".bill-ocr-createsupplier", function () {
+			const btn = $(this);
+			const name = result.vendor_name_english || result.vendor_name_on_bill;
+			const do_create = (ack) =>
+				frappe.call({
+					method: "fountainhead.bill_ocr.api.create_supplier_from_bill",
+					args: { supplier_name: name, acknowledged_similar: ack },
+					freeze: true,
+					freeze_message: __("Creating supplier…"),
+					callback: (r) => {
+						const m = r.message || {};
+						if (m.needs_confirmation) {
+							const list = (m.similar || [])
+								.map((s) => `${s.supplier_name || s.supplier} (${s.score}%)`)
+								.join(", ");
+							frappe.confirm(
+								__("Similar suppliers already exist: {0}.<br>Create <b>{1}</b> anyway?", [
+									frappe.utils.escape_html(list),
+									frappe.utils.escape_html(name),
+								]),
+								() => do_create(1)
+							);
+							return;
+						}
+						if (m.supplier) {
+							frm.set_value("supplier", m.supplier);
+							btn.removeClass("btn-default")
+								.addClass("btn-primary")
+								.prop("disabled", true)
+								.html(`✓ ${__("Created & set")}: ${frappe.utils.escape_html(m.supplier)}`);
+						}
+					},
+				});
+			do_create(0);
 		});
 
 		d.$body.on("click", ".bill-ocr-pick", function () {
@@ -682,12 +858,16 @@ fountainhead.bill_ocr = {
 			if (!line || !line.__rowname) return;
 			// A manual pick is a human decision — remember it for next time.
 			fountainhead.bill_ocr.assign_item(frm, line, code, { remember: true });
-			$(this)
-				.closest("div")
-				.find(".bill-ocr-pick")
-				.removeClass("btn-primary")
-				.addClass("btn-default");
-			$(this).removeClass("btn-default").addClass("btn-primary");
+			const block = $(this).closest("div");
+			block.find(".bill-ocr-pick").removeClass("btn-primary").addClass("btn-default").each(function () {
+				if ($(this).data("orig-html")) { $(this).html($(this).data("orig-html")); $(this).removeData("orig-html"); }
+			});
+			// Say WHICH item is now on the row, on the button itself — "the name we
+			// selected should be visible" (Chetan sir, 26 Aug demo).
+			const cand = (line.candidates || []).find((c) => c.item_code === code);
+			$(this).data("orig-html", $(this).html());
+			$(this).removeClass("btn-default").addClass("btn-primary")
+				.html(`✓ ${__("Selected")}: ${frappe.utils.escape_html((cand && cand.item_name) || code)}`);
 		});
 
 		// Plain-English correction → re-read → replace the rows with the new reading.
@@ -733,6 +913,31 @@ function bill_ocr_view_button(frm) {
 	});
 }
 
+// The bill's rate is authoritative on OCR-filled documents. ERPNext's item_code
+// trigger refetches the price-list rate, and when the price list has none the
+// row silently drops to 0 (15 Sept sitting: renaming maida→rice zeroed ₹125).
+// After the fetch settles, put the bill's rate back if it was wiped.
+function bill_ocr_keep_rate(frm, cdt, cdn) {
+	if (!frm.doc.custom_attachment) return;
+	const kept = (locals[cdt][cdn] || {}).rate;
+	if (!kept) return;
+	setTimeout(() => {
+		const row = locals[cdt] && locals[cdt][cdn];
+		if (row && row.item_code && !row.rate) {
+			frappe.model.set_value(cdt, cdn, "rate", kept);
+			frappe.show_alert({
+				message: __("Kept the bill's rate {0} — the price list had no price for this item.", [
+					frappe.format(kept, { fieldtype: "Currency" }),
+				]),
+				indicator: "blue",
+			});
+		}
+	}, 1500);
+}
+
+frappe.ui.form.on("Purchase Receipt Item", { item_code: bill_ocr_keep_rate });
+frappe.ui.form.on("Purchase Invoice Item", { item_code: bill_ocr_keep_rate });
+
 frappe.ui.form.on("Purchase Receipt", {
 	refresh: bill_ocr_view_button,
 	custom_attachment(frm) {
@@ -751,4 +956,53 @@ frappe.ui.form.on("Purchase Invoice", {
 	onload_post_render(frm) {
 		if (frm.is_new() && frm.doc.custom_attachment) fountainhead.bill_ocr.run(frm);
 	},
+	// The 1 Sept RCM/GST booking rules: the two checkboxes are either/or by law
+	// (what carries RCM never also gives credit). Ticking one clears the other;
+	// toggling GST-credit re-serves the cached reading (free) so the taxes table
+	// flips between "GST rows kept" and "GST folded into the rates".
+	custom_gst_credit(frm) {
+		if (frm.doc.custom_gst_credit && frm.doc.custom_rcm) frm.set_value("custom_rcm", 0);
+		fountainhead.bill_ocr.refill_taxes_for_credit(frm);
+	},
+	custom_rcm(frm) {
+		if (frm.doc.custom_rcm && frm.doc.custom_gst_credit) frm.set_value("custom_gst_credit", 0);
+		if (frm.doc.custom_rcm) {
+			frappe.show_alert({
+				message: __("RCM: book the bill without its GST here; the RCM liability accumulates in GST Payable and is settled in the consolidated voucher (Input ↔ RCM-Output adjustment entry)."),
+				indicator: "blue",
+			});
+			fountainhead.bill_ocr.refill_taxes_for_credit(frm);
+		}
+	},
 });
+
+// Re-serve the stored reading (free — it is cached) with the GST-credit answer,
+// and swap ONLY the taxes table + item rates to match. Items already picked by
+// hand are left alone unless the user confirms.
+fountainhead.bill_ocr.refill_taxes_for_credit = function (frm) {
+	if (!frm.doc.custom_attachment) return;
+	// Only meaningful where the company keeps GST rows at all.
+	frappe.call({
+		method: "fountainhead.bill_ocr.api.extract_bill",
+		args: {
+			file_url: frm.doc.custom_attachment,
+			doctype: frm.doctype,
+			company: frm.doc.company,
+			gst_credit: frm.doc.custom_rcm ? 0 : (frm.doc.custom_gst_credit ? 1 : 0),
+		},
+		freeze: true,
+		freeze_message: __("Re-applying the GST treatment…"),
+		callback: (r) => {
+			if (!r.message) return;
+			fountainhead.bill_ocr.fill_items(frm, r.message.items || [], true);
+			frm.clear_table("taxes");
+			fountainhead.bill_ocr.fill_taxes(frm, r.message.taxes || [], true);
+			frappe.show_alert({
+				message: frm.doc.custom_gst_credit
+					? __("GST kept as separate rows (input credit will be claimed).")
+					: __("GST folded into the item rates (no credit on this bill)."),
+				indicator: "blue",
+			});
+		},
+	});
+};
